@@ -1,0 +1,54 @@
+# Security Monitor Configuration Example
+# Copy to /etc/secmon/config.yaml or set SECMON_CONFIG_PATH
+
+general:
+  data_dir: /var/lib/secmon
+  log_file: /var/log/security-monitor.log
+  botnet_log_file: /var/log/secmon-botnet.log
+  snapshot_retention_days: 7
+
+whitelist:
+  own_ip: "203.0.113.1"  # REQUIRED: server's public IP
+  known_ssh_ips:
+    - "203.0.113.1"
+  network_prefixes:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "127.0.0.0/8"
+
+anomaly:
+  baseline_min_samples: 4
+  max_baseline_days: 30
+  dedup_slot_hours: 6
+  cache_ttl_seconds: 300
+  cooldown_minutes: 60
+
+realtime:
+  ssh_brute_force_threshold: 10
+  invalid_user_threshold: 5
+  kernel_error_threshold: 3
+
+botnet:
+  lookback_hours: 24
+  min_ips_per_subnet: 3
+  min_hits_per_subnet: 100
+  solo_min_hits: 500
+  bulletproof_prefixes: []
+
+alerting:
+  webhook_url: ""
+  webhook_min_level: CRITICAL
+
+suspicious_ports:
+  ranges:
+    - [6660, 6700]
+  specific: [4444, 5555, 8080, 9090, 2222]
+
+dns:
+  expected_nameservers:
+    - "8.8.8.8"
+    - "8.8.4.4"
+
+metrics:
+  overrides: {}
