@@ -22,3 +22,22 @@ htmlcov/
 
 # Local config (use config.yaml.example as template)
 config.yaml
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Runtime
+*.egg-info/
+.egg-info/
+
+# Hermes cron state (machine-specific)
+cron/
+logs/
+*.log
+
+# System
+.DS_Store
+*.swp
