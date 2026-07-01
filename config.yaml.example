@@ -45,6 +45,10 @@ whitelist:
   proc_hollow_exclude_pids:
     - 449    # unattended-upgrades-shutdown (Python allocator)
 
+  # Process comm names to exclude from hollowing/mapping checks
+  proc_hollow_exclude_comms:
+    - "node"   # Node.js LSP servers (Pyright, etc.) use JIT memory allocators
+
   # Persistence entry prefixes to ignore (secmon/hermes own systemd units)
   persist_exclude_prefixes:
     - "/etc/systemd/system/secmon-"

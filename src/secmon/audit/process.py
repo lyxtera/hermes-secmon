@@ -145,9 +145,18 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
 
     # Process hollowing / code injection via /proc/*/maps
     exclude_pids = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_pids", []))
+    exclude_comms = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_comms", []))
     for pid in list(proc_pids)[:300]:
         if pid in exclude_pids:
             continue
+        # Check if this process comm is in the exclusion list
+        if exclude_comms:
+            try:
+                comm_name = open(f"/proc/{pid}/comm", encoding="utf-8", errors="replace").read().strip()
+                if comm_name in exclude_comms:
+                    continue
+            except OSError:
+                pass
         maps_path = f"/proc/{pid}/maps"
         try:
             with open(maps_path, encoding="utf-8", errors="replace") as fh:

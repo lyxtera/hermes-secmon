@@ -68,6 +68,7 @@ def default_config() -> dict[str, Any]:
             "tmpfs_mounts": [],
             "secret_exclude_paths": [],
             "proc_hollow_exclude_pids": [],
+            "proc_hollow_exclude_comms": [],
             "persist_exclude_prefixes": [],
         },
         "anomaly": {
