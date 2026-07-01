@@ -288,6 +288,26 @@ export SECMON_ANOMALY_COOLDOWN_MINUTES=30
 
 See [`config.yaml.example`](config.yaml.example) for all options.
 
+### Audit exclusion tuning
+
+Secmon scanners are intentionally aggressive. Use these config options in `whitelist` and `hardening` to silence expected findings without modifying code:
+
+| Config path | Purpose | Example |
+|-------------|---------|---------|
+| `whitelist.hidden_tmp_entries` | Ignore known hidden files in `/tmp` (VNC X11 sockets) | `[".font-unix", ".XIM-unix"]` |
+| `whitelist.tmpfs_mounts` | Expected tmpfs mounts (systemd `/var/tmp`) | `["/var/tmp"]` |
+| `whitelist.secret_exclude_paths` | Skip operational config files in secret pattern scan | `["/root/.hermes/config.yaml"]` |
+| `whitelist.proc_hollow_exclude_pids` | Exclude specific PIDs from anonymous mapping checks | `[449]` |
+| `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node"]` |
+| `whitelist.persist_exclude_prefixes` | Ignore secmon/hermes own systemd units in persistence diff | `["/etc/systemd/system/secmon-"]` |
+| `dns.expected_nameservers` | Known-good DNS servers to suppress NC-3 alerts | `["1.1.1.1"]` |
+| `hardening.skip_root_login_check` | Allow root SSH login without audit warning | `True` |
+| `hardening.skip_fw_policy_check` | Don't flag INPUT ACCEPT on remote servers (lockout risk) | `True` |
+| `hardening.skip_kernel_modules_check` | Don't flag modules enabled (can't disable at runtime) | `True` |
+| `sysctl.expected_values` | Accept multiple valid sysctl values (e.g. `kptr_restrict=1` or `2`) | `kernel.kptr_restrict: ["1", "2"]` |
+
+These are **per-design** overrides — they let you tune for your environment without forking the scanner logic. All defaults are conservative (maximum alerts).
+
 ## Project layout
 
 ```
