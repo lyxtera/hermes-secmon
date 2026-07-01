@@ -1,18 +1,23 @@
-# secmon — Security Audit & Monitoring
+# Secmon — Hermes Agent Security Plugin
 
-Production-grade security monitoring for **Debian 12 (Bookworm) cloud VPS** servers. Combines statistical anomaly detection, realtime threat checks, multi-layer forensic audits, and automated botnet /24 blocking.
+Production-grade security monitoring for servers, delivered as a **Hermes Agent plugin**. Secures the server while the Hermes agent is deployed there — combining statistical anomaly detection, realtime threat checks, multi-layer forensic audits, and automated botnet /24 blocking.
 
-Designed to run as root on a single VPS. Silent when normal — output appears only when findings are detected (except `--status`, `--daily`, and `--audit`).
+Designed to run as root on a single VPS. Silent when normal — output appears only when findings are detected (except `--status`, `--daily`, and `--audit`). Notifications are delivered through the **Hermes Gateway**; scheduling uses **Hermes Cron** no-agent jobs (no OS crontab required).
 
 ## Features
 
+- **Hermes plugin integration** — six LLM-callable tools, `/secmon` slash command, and `pre_llm_call` security context injection
+- **Hermes Gateway notifications** — cron jobs capture script stdout and deliver to Telegram, Discord, Slack, and other configured platforms
+- **Hermes Cron scheduling** — no-agent watchdog jobs for tick (15 min), audit (6 h), and daily digest (08:00 UTC)
 - **11 metrics** — SSH failures, attacker IPs/subnets, fail2ban bans, botnet rules, kernel errors, listening ports, and more
-- **8 realtime threat checks** — brute-force bursts, new fail2ban bans, port changes, unauthorized SSH sessions, suspicious outbound connections, etc.
+- **9 realtime threat checks** — self-protection, brute-force bursts, new fail2ban bans, port changes, unauthorized SSH sessions, suspicious/C2 outbound connections, etc.
+- **Audit-to-alert bridge** — CRITICAL/HIGH deep-audit findings dispatched through the same dedup/log/stdout pipeline
+- **Advanced compromise detection** — process hollowing, persistence baseline diff, process lineage, secret exposure, eBPF/kernel tamper
 - **Two-gate anomaly detection** — sigma threshold + minimum absolute delta with rolling baselines (Bessel's correction)
 - **8+ audit layers** — file integrity, network, process, auth, logs, threat intel, compliance, trends
 - **11 extended checks (NC-1–NC-11)** — Docker privilege escalation, DNS integrity, eBPF, supply chain, log gaps, and more
 - **Botnet /24 blocking** — automatic iptables BOTNET chain with whitelist enforcement
-- **Structured JSON-line logging** — alert deduplication, optional webhook via `curl`
+- **Structured JSON-line logging** — alert deduplication with local log retention
 
 ## Requirements
 
@@ -20,6 +25,7 @@ Designed to run as root on a single VPS. Silent when normal — output appears o
 |-------------|-------|
 | **OS** | Debian 12 (Bookworm) or compatible |
 | **Python** | 3.11+ |
+| **Hermes Agent** | Gateway running for cron delivery (`hermes gateway start`) |
 | **Privileges** | root (for iptables, journalctl, /proc inspection) |
 | **iptables** | Required for botnet blocking and firewall audits |
 | **fail2ban** | Recommended; optional but improves SSH defense metrics |
@@ -33,9 +39,43 @@ Optional tools (graceful degradation if missing):
 
 ## Installation
 
-### 1. Install system packages
+Secmon uses **symlink-based deployment**: the source checkout stays where you cloned it; stable paths (`/opt/secmon`, `/usr/local/bin/secmon`) point back to that checkout. No code is copied during install.
 
-On the target VPS (as root):
+### Option A: Hermes plugins install (recommended)
+
+```bash
+hermes plugins install <owner>/security-audit --enable
+sudo /opt/secmon/scripts/install.sh
+```
+
+### Option B: Manual install from checkout
+
+On the target VPS as root, from your clone directory:
+
+```bash
+sudo ./scripts/install.sh
+```
+
+Options:
+
+```bash
+sudo ./scripts/install.sh --repo /path/to/security-audit --source /opt/secmon --skip-hermes-cron
+```
+
+The installer will:
+
+1. Create `/opt/secmon` → symlink to your checkout
+2. Create a venv at `/opt/secmon/venv` and `pip install -e` the package (registers the Hermes plugin entry point)
+3. Symlink `/usr/local/bin/secmon` → venv entry point
+4. Create `/etc/secmon`, `/var/lib/secmon`, log files with secure permissions
+5. Run `hermes plugins enable secmon` (when Hermes CLI is available)
+6. Register three Hermes Cron no-agent jobs (tick, audit, daily)
+
+### Manual installation
+
+If you prefer not to use the script:
+
+#### 1. Install system packages
 
 ```bash
 apt update
@@ -46,16 +86,14 @@ apt install -y python3 python3-pip python3-venv \
 apt install -y bpftool debsums
 ```
 
-### 2. Clone or copy the project
+#### 2. Link the checkout (do not copy)
 
 ```bash
-git clone <your-repo-url> /opt/secmon
+ln -s /path/to/security-audit /opt/secmon
 cd /opt/secmon
 ```
 
-Or copy the project directory to `/opt/secmon` (or any path you prefer).
-
-### 3. Create a virtual environment (recommended)
+#### 3. Create a virtual environment
 
 ```bash
 python3 -m venv /opt/secmon/venv
@@ -64,16 +102,13 @@ pip install --upgrade pip
 pip install -e .
 ```
 
-This installs the `secmon` CLI and runtime dependency (`PyYAML`).
-
-To install development/test dependencies as well:
+Symlink the CLI:
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+ln -sf /opt/secmon/venv/bin/secmon /usr/local/bin/secmon
 ```
 
-### 4. Create data and log directories
+#### 4. Create data and log directories
 
 ```bash
 mkdir -p /var/lib/secmon/snapshots
@@ -83,55 +118,46 @@ touch /var/log/secmon-botnet.log
 chmod 700 /var/lib/secmon
 ```
 
-### 5. Configure the monitor
-
-Copy the example configuration and edit it for your server:
+#### 5. Configure the monitor
 
 ```bash
 cp config.yaml.example /etc/secmon/config.yaml
 chmod 600 /etc/secmon/config.yaml
 ```
 
-**Required:** set your server's public IP:
+Edit `/etc/secmon/config.yaml` — set `whitelist.own_ip` and `hermes.deliver_target`.
 
-```yaml
-whitelist:
-  own_ip: "203.0.113.1"   # your VPS public IP
-  known_ssh_ips:
-    - "203.0.113.1"
-```
-
-Also configure expected DNS nameservers if you use NC-3:
-
-```yaml
-dns:
-  expected_nameservers:
-    - "8.8.8.8"
-    - "8.8.4.4"
-```
-
-Alternatively, use environment variables (highest priority):
+#### 6. Enable the Hermes plugin
 
 ```bash
-export SECMON_OWN_IP=203.0.113.1
-export SECMON_DATA_DIR=/var/lib/secmon
-export SECMON_CONFIG_PATH=/etc/secmon/config.yaml
+hermes plugins enable secmon
+hermes gateway start   # or: hermes gateway install && hermes gateway start
 ```
 
-The monitor runs without a config file using built-in defaults, but `own_ip` should be set on any production host.
+#### 7. Register Hermes cron jobs
 
-### 6. Verify installation
+See [`cron/jobs.yaml`](cron/jobs.yaml) for job definitions. Example:
+
+```bash
+DELIVER=telegram   # or discord, slack, etc.
+
+hermes cron add "*/15 * * * *" --no-agent \
+  --script /opt/secmon/scripts/tick.sh --name secmon-tick --deliver "${DELIVER}"
+
+hermes cron add "0 */6 * * *" --no-agent \
+  --script /opt/secmon/scripts/audit.sh --name secmon-audit --deliver "${DELIVER}"
+
+hermes cron add "0 8 * * *" --no-agent \
+  --script /opt/secmon/scripts/daily.sh --name secmon-daily --deliver "${DELIVER}"
+```
+
+Hermes Cron no-agent mode runs the script on schedule and delivers stdout verbatim via the Gateway. Empty stdout on a clean tick = silent (no notification).
+
+#### 8. Verify
 
 ```bash
 secmon --status
-```
-
-You should see state version 3, empty baselines (until you record samples), and current metric values.
-
-Run a one-off check (silent if nothing is wrong):
-
-```bash
-secmon --check
+hermes cron list
 ```
 
 Record an initial baseline sample:
@@ -140,119 +166,72 @@ Record an initial baseline sample:
 secmon --record
 ```
 
-### 7. Schedule cron jobs
+## Hermes plugin tools
 
-Add to root's crontab (`crontab -e`):
+When enabled (`hermes plugins enable secmon`), the agent can call:
 
-```cron
-# Primary monitor — threat checks, anomalies, botnet, daily digest
-*/15 * * * * /opt/secmon/venv/bin/secmon --tick
+| Tool | Description |
+|------|-------------|
+| `secmon_status` | Show baselines, state, and current metrics |
+| `secmon_check` | Run realtime threat checks + anomaly detection |
+| `secmon_audit` | Full multi-layer forensic audit (JSON) |
+| `secmon_record` | Collect metrics and append baseline sample |
+| `secmon_daily` | Human-readable daily security digest |
+| `secmon_detect_botnet` | Botnet /24 analysis and iptables blocking |
 
-# Deep audit (JSON output for LLM summarization or log ingestion)
-0 */6 * * * /opt/secmon/venv/bin/secmon --audit >> /var/log/secmon-audit.json 2>&1
+Slash command:
+
+```text
+/secmon status
+/secmon check
+/secmon audit
 ```
 
-If you installed without a venv and `secmon` is on `PATH`:
+A `pre_llm_call` hook injects a short security context summary (last audit score, open findings, baseline status) into each agent turn.
 
-```cron
-*/15 * * * * secmon --tick
-```
+## Gateway notifications
 
-### 8. (Optional) Enable webhook alerts
+Notifications are **not** sent via webhooks. Instead:
 
-In `/etc/secmon/config.yaml`:
+1. Hermes Cron runs a no-agent script (`scripts/tick.sh`, etc.)
+2. The script invokes `secmon` and prints findings to stdout
+3. The Hermes Gateway delivers stdout to the configured platform
+
+Configure the delivery target in `/etc/secmon/config.yaml`:
 
 ```yaml
-alerting:
-  webhook_url: "https://your-endpoint.example/alerts"
-  webhook_min_level: CRITICAL
+hermes:
+  deliver_target: "telegram"   # telegram, discord, slack, signal, etc.
+  min_severity: HIGH
 ```
 
-Alerts are sent via `curl` POST with a JSON payload.
+Or set `SECMON_DELIVER_TARGET` via environment (mapped to `hermes.deliver_target`).
+
+For one-off alerts from a running script (deploy hook, CI step):
+
+```bash
+secmon --check | hermes send --deliver telegram
+```
 
 ## Uninstallation
 
-To fully remove secmon from a server (as root):
-
-### 1. Stop scheduled jobs
-
-Remove secmon lines from root's crontab:
-
 ```bash
-crontab -e
+sudo /opt/secmon/scripts/uninstall.sh
 ```
 
-Delete any lines containing `secmon --tick`, `secmon --audit`, or similar.
+Options:
 
-### 2. Uninstall the Python package
+| Flag | Effect |
+|------|--------|
+| `--purge` | Remove `/etc/secmon`, `/var/lib/secmon`, and log files |
+| `--remove-botnet` | Flush iptables BOTNET chain |
+| `--keep-source` | Leave `/opt/secmon` symlink in place |
 
-If you used a virtual environment:
-
-```bash
-source /opt/secmon/venv/bin/activate
-pip uninstall -y secmon
-deactivate
-```
-
-If you installed globally with `pip install -e .`:
-
-```bash
-pip uninstall -y secmon
-```
-
-### 3. Remove iptables BOTNET rules
-
-secmon adds a custom `BOTNET` chain and a jump rule in `INPUT`. Remove them before deleting the project:
-
-```bash
-# List blocked subnets (optional — note any you may want to keep blocking manually)
-iptables -L BOTNET -n
-
-# Remove the jump from INPUT to BOTNET (repeat until no match)
-while iptables -C INPUT -j BOTNET 2>/dev/null; do
-  iptables -D INPUT -j BOTNET
-done
-
-# Flush and delete the BOTNET chain
-iptables -F BOTNET
-iptables -X BOTNET
-
-# Persist the cleaned ruleset
-netfilter-persistent save
-```
-
-If you only want to clear blocks but keep the chain for a future reinstall:
-
-```bash
-iptables -F BOTNET
-netfilter-persistent save
-```
-
-### 4. Remove application files (optional)
-
-```bash
-rm -rf /opt/secmon          # project directory and venv
-rm -rf /etc/secmon          # configuration
-rm -rf /var/lib/secmon      # state, baselines, snapshots
-rm -f /var/log/security-monitor.log
-rm -f /var/log/secmon-botnet.log
-rm -f /var/log/secmon-audit.json
-```
-
-Keep `/var/lib/secmon` and the log files if you plan to reinstall and want to preserve baselines or history.
-
-### 5. System packages (optional)
-
-secmon does not install `fail2ban`, `iptables`, or other system packages. Remove them only if nothing else on the host needs them:
-
-```bash
-apt remove -y fail2ban netfilter-persistent
-# Do not remove iptables unless you manage firewall another way
-```
+The uninstaller removes Hermes cron jobs (`secmon-tick`, `secmon-audit`, `secmon-daily`) and disables the plugin. The source checkout is **never deleted** unless you remove it yourself.
 
 ## Usage
 
-Exactly one mode per invocation:
+Exactly one mode per CLI invocation:
 
 | Mode | Command | Description |
 |------|---------|-------------|
@@ -293,15 +272,25 @@ See [`config.yaml.example`](config.yaml.example) for all options.
 
 ```
 security-audit/
-├── pyproject.toml          # Package metadata and pytest/coverage config
-├── requirements.txt        # Runtime + dev dependencies
-├── config.yaml.example     # Example configuration
-├── SECURITY-AUDIT-SPEC.MD  # Full build specification
-├── src/secmon/             # Application source
-│   ├── checks/             # 8 realtime threat checks
-│   ├── audit/              # 8 forensic audit layers + NC-1–NC-11
-│   └── modes/              # CLI mode handlers
-└── tests/                  # Test suite (95%+ coverage)
+├── plugin.yaml                 # Hermes plugin manifest (repo root)
+├── pyproject.toml              # Package + hermes_agent.plugins entry point
+├── config.yaml.example         # Example configuration
+├── cron/
+│   └── jobs.yaml               # Hermes Cron job definitions
+├── scripts/
+│   ├── install.sh              # Symlink installer + Hermes registration
+│   ├── uninstall.sh            # Reversible uninstall
+│   ├── tick.sh                 # Hermes cron wrapper (15 min)
+│   ├── audit.sh                # Hermes cron wrapper (6 h)
+│   └── daily.sh                # Hermes cron wrapper (daily)
+├── SECURITY-AUDIT-SPEC.MD        # Full build specification
+├── src/
+│   ├── secmon/                 # Core monitoring engine
+│   │   ├── checks/             # Realtime threat checks
+│   │   ├── audit/              # 8 forensic audit layers + NC-1–NC-11
+│   │   └── modes/              # CLI mode handlers
+│   └── secmon_plugin/          # Hermes plugin (register, tools, schemas)
+└── tests/                      # Test suite (95%+ coverage)
 ```
 
 ## Development
@@ -320,16 +309,25 @@ Run with coverage report:
 pytest --cov=secmon --cov-report=term-missing
 ```
 
+For local Hermes plugin testing, enable project plugins:
+
+```bash
+export HERMES_ENABLE_PROJECT_PLUGINS=true
+hermes plugins enable secmon
+```
+
 ## Post-installation checklist
 
-1. Set `whitelist.own_ip` and `known_ssh_ips` in config
-2. Run `secmon --status` to confirm state initializes
-3. Run `secmon --record` several times over 24+ hours to build baselines
-4. Enable the 15-minute `--tick` cron job
-5. Review `/var/log/security-monitor.log` for false positives; tune thresholds in config
-6. Ensure fail2ban sshd jail is active: `fail2ban-client status sshd`
-7. Confirm iptables BOTNET chain exists after first botnet run: `iptables -L BOTNET -n`
-8. Persist iptables rules: `netfilter-persistent save`
+1. Run `sudo ./scripts/install.sh` (or `hermes plugins install … --enable`)
+2. Set `whitelist.own_ip` and `known_ssh_ips` in config
+3. Set `hermes.deliver_target` to your preferred Gateway platform
+4. Ensure Hermes gateway is running: `hermes gateway status`
+5. Run `secmon --status` to confirm state initializes
+6. Run `secmon --record` several times over 24+ hours to build baselines
+7. Verify Hermes cron jobs: `hermes cron list`
+8. Review `/var/log/security-monitor.log` for false positives; tune thresholds
+9. Ensure fail2ban sshd jail is active: `fail2ban-client status sshd`
+10. Confirm iptables BOTNET chain exists after first botnet run: `iptables -L BOTNET -n`
 
 ## Logs and state
 

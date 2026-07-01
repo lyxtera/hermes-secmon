@@ -5,15 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "secmon"
 version = "1.0.0"
-description = "Production-grade security audit and monitoring for Debian 12 VPS"
+description = "Hermes Agent plugin — security audit and monitoring for Debian 12 VPS"
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+hermes = ["hermes-agent"]
 
 [project.scripts]
 secmon = "secmon.__main__:main"
 
+[project.entry-points."hermes_agent.plugins"]
+secmon = "secmon_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+secmon_plugin = ["plugin.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

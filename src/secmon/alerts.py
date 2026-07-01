@@ -5,12 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
-import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from secmon.shell import run_cmd
 from secmon.utils import parse_iso, sanitize_message, utcnow, utcnow_iso
 
 logger = logging.getLogger("secmon.alerts")
@@ -29,6 +26,9 @@ DEDUP_WINDOWS = {
     "outbound:": 24 * 3600,
     "anomaly:": 3600,
     "botnet:": 24 * 3600,
+    "audit:": 6 * 3600,
+    "self_prot:": 3600,
+    "c2:": 3600,
 }
 
 
@@ -90,40 +90,37 @@ def _log_alert(cfg: dict, alert: Alert) -> None:
     logger.info(line)
 
 
-def _send_webhook(cfg: dict, alert: Alert) -> None:
-    url = cfg.get("alerting", {}).get("webhook_url", "")
-    if not url:
-        return
-    min_level = cfg.get("alerting", {}).get("webhook_min_level", "CRITICAL")
-    if SEVERITY_ORDER.get(alert.severity, 0) < SEVERITY_ORDER.get(min_level, 4):
-        return
-    payload = {
-        "severity": alert.severity,
-        "source": alert.source,
-        "hostname": socket.gethostname(),
-        "timestamp": utcnow_iso(),
-        "message": sanitize_message(alert.message),
-        "structured": alert.structured,
-    }
-    try:
-        run_cmd(
-            [
-                "curl",
-                "-sS",
-                "-m",
-                "10",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                json.dumps(payload),
-                url,
-            ],
-            timeout=12,
-        )
-    except Exception as exc:
-        logger.error("webhook failed: %s", exc)
+def audit_finding_to_alert(finding: Any) -> Alert:
+    """Convert an AuditFinding into an Alert for the dispatch pipeline."""
+    check_id = getattr(finding, "check_id", "unknown")
+    message = getattr(finding, "message", "")
+    layer = getattr(finding, "layer", 0)
+    detail = getattr(finding, "detail", {}) or {}
+    severity = getattr(finding, "severity", "MEDIUM")
+    key_suffix = sanitize_message(message)[:120]
+    return Alert(
+        severity=severity,
+        source=f"audit:{check_id}",
+        message=message,
+        dedup_key=f"audit:{check_id}:{key_suffix}",
+        structured={"layer": layer, "check_id": check_id, **detail},
+    )
+
+
+def findings_to_alerts(
+    findings: list[Any],
+    *,
+    min_severity: str = "HIGH",
+) -> list[Alert]:
+    """Bridge audit findings (CRITICAL/HIGH by default) into actionable alerts."""
+    floor = SEVERITY_ORDER.get(min_severity, 3)
+    alerts: list[Alert] = []
+    for finding in findings:
+        sev = getattr(finding, "severity", "INFO")
+        if SEVERITY_ORDER.get(sev, 0) < floor:
+            continue
+        alerts.append(audit_finding_to_alert(finding))
+    return alerts
 
 
 def dispatch(
@@ -133,7 +130,11 @@ def dispatch(
     *,
     stdout: bool = True,
 ) -> list[Alert]:
-    """Dedup, log, optionally print and webhook. Returns new alerts only."""
+    """Dedup, log, optionally print to stdout. Returns new alerts only.
+
+    Hermes Cron no-agent jobs capture stdout and deliver via the Gateway.
+    Empty stdout on a clean tick means no notification is sent.
+    """
     new_alerts: list[Alert] = []
     for alert in alerts:
         if is_duplicate(alert, state):
@@ -141,7 +142,6 @@ def dispatch(
         mark_dispatched(alert, state)
         _log_alert(cfg, alert)
         new_alerts.append(alert)
-        _send_webhook(cfg, alert)
     if stdout and new_alerts:
         for a in new_alerts:
             print(f"[{a.severity}] {a.source}: {sanitize_message(a.message)}")

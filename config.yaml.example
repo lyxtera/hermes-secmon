@@ -7,6 +7,13 @@ general:
   botnet_log_file: /var/log/secmon-botnet.log
   snapshot_retention_days: 7
 
+installation:
+  source_dir: /opt/secmon          # symlink to checkout
+  cli_path: /usr/local/bin/secmon
+  cron_marker: "secmon --tick"       # legacy OS crontab fallback for self-protection
+  hermes_cron_job: secmon-tick       # Hermes Cron job name (primary scheduler)
+  venv_dir: /opt/secmon/venv
+
 whitelist:
   own_ip: "203.0.113.1"  # REQUIRED: server's public IP
   known_ssh_ips:
@@ -36,9 +43,9 @@ botnet:
   solo_min_hits: 500
   bulletproof_prefixes: []
 
-alerting:
-  webhook_url: ""
-  webhook_min_level: CRITICAL
+hermes:
+  deliver_target: "telegram"   # Hermes Gateway delivery target for cron jobs
+  min_severity: HIGH           # Minimum severity for tick alert stdout output
 
 suspicious_ports:
   ranges:

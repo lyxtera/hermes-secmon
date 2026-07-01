@@ -15,12 +15,14 @@ from . import (
     outbound,
     port_scan,
     ports,
+    self_protection,
     ssh_session,
 )
 
 logger = logging.getLogger("secmon.checks")
 
 CHECKS: list[tuple[str, Callable]] = [
+    ("self_protection", self_protection.check),
     ("fail2ban", fail2ban.check),
     ("brute_force", brute_force.check),
     ("port_scan", port_scan.check),

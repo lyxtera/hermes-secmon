@@ -1,9 +1,11 @@
-"""Layer 6: Threat intelligence + NC-7."""
+"""Layer 6: Threat intelligence + NC-7 + persistence baseline + secrets."""
 
 from __future__ import annotations
 
 import glob
+import hashlib
 import os
+import pwd
 import re
 from datetime import datetime, timedelta
 
@@ -24,6 +26,164 @@ WEBSHELL_PATTERNS = [
 BACKDOOR_NAMES = {"c99.php", "r57.php", "shell.php", "cmd.php", "backdoor.php"}
 
 WEB_ROOTS = ["/var/www", "/srv/www", "/usr/share/nginx/html"]
+
+PERSISTENCE_PATHS = [
+    "/etc/rc.local",
+    "/etc/profile",
+    "/etc/bash.bashrc",
+    "/root/.bashrc",
+    "/root/.profile",
+]
+
+SECRET_PATTERNS = [
+    re.compile(r"-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----"),
+    re.compile(r"AWS_SECRET_ACCESS_KEY\s*="),
+    re.compile(r"api[_-]?key\s*[:=]", re.I),
+]
+
+SECRET_FILENAMES = {"id_rsa", "id_ecdsa", "id_ed25519", ".env", "credentials", "secrets.json"}
+
+
+def _file_hash(path: str) -> str | None:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(8192)
+                if not chunk:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8", errors="replace")
+                h.update(chunk)
+        return h.hexdigest()
+    except (OSError, TypeError):
+        return None
+
+
+def _collect_persistence_entries() -> dict[str, str]:
+    entries: dict[str, str] = {}
+    for path in PERSISTENCE_PATHS:
+        if os.path.isfile(path):
+            digest = _file_hash(path)
+            if digest:
+                entries[path] = digest
+    for path in glob.glob("/etc/cron.*/*") + glob.glob("/var/spool/cron/crontabs/*"):
+        if os.path.isfile(path):
+            digest = _file_hash(path)
+            if digest:
+                entries[path] = digest
+    crontab = run_cmd_safe(["crontab", "-l"])
+    if crontab.strip() and "no crontab" not in crontab.lower():
+        entries["crontab:root"] = hashlib.sha256(crontab.encode()).hexdigest()
+    atq = run_cmd_safe(["atq"])
+    if atq.strip():
+        entries["atq"] = hashlib.sha256(atq.encode()).hexdigest()
+    timers = run_cmd_safe(["systemctl", "list-timers", "--all", "--no-pager"])
+    if timers.strip():
+        entries["systemd_timers"] = hashlib.sha256(timers.encode()).hexdigest()
+    for override in glob.glob("/etc/systemd/system/**/*.d/*.conf", recursive=True):
+        if os.path.isfile(override):
+            digest = _file_hash(override)
+            if digest:
+                entries[override] = digest
+    for unit in glob.glob("/etc/systemd/system/*.service"):
+        if os.path.isfile(unit):
+            digest = _file_hash(unit)
+            if digest:
+                entries[unit] = digest
+    for home in glob.glob("/home/*/.config/systemd/user/*.service"):
+        if os.path.isfile(home):
+            digest = _file_hash(home)
+            if digest:
+                entries[home] = digest
+    return entries
+
+
+def _persistence_severity(path: str, content_hint: str = "") -> str:
+    if any(p in path for p in ("/tmp", "/var/tmp", "/dev/shm")):
+        return "CRITICAL"
+    if "curl | bash" in content_hint or "wget -" in content_hint:
+        return "CRITICAL"
+    if path.startswith("/etc/systemd") or "crontab" in path or "cron" in path:
+        return "HIGH"
+    return "MEDIUM"
+
+
+def _scan_secrets(cfg: dict) -> list[AuditFinding]:
+    findings: list[AuditFinding] = []
+    scan_roots = ["/tmp", "/var/tmp", "/dev/shm", "/root"]
+    for web in WEB_ROOTS:
+        if os.path.isdir(web):
+            scan_roots.append(web)
+    for root in scan_roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for dirpath, _, files in os.walk(root):
+                depth = dirpath[len(root) :].count(os.sep)
+                if depth > 3:
+                    continue
+                for fname in files:
+                    fp = os.path.join(dirpath, fname)
+                    if fname in SECRET_FILENAMES or fname.endswith((".pem", ".key", ".env")):
+                        try:
+                            st = os.stat(fp)
+                            mode = st.st_mode & 0o777
+                            if mode & 0o004:
+                                findings.append(
+                                    AuditFinding(
+                                        "CRITICAL", 6, "secret_world_readable",
+                                        f"World-readable secret file: {fp}",
+                                        {"path": fp, "mode": oct(mode)},
+                                    )
+                                )
+                            elif fname in ("id_rsa", "id_ecdsa", "id_ed25519") and root in (
+                                "/tmp", "/var/tmp", "/dev/shm"
+                            ):
+                                findings.append(
+                                    AuditFinding(
+                                        "CRITICAL", 6, "secret_key_tmp",
+                                        f"Private key in temp directory: {fp}",
+                                    )
+                                )
+                        except OSError:
+                            continue
+                    try:
+                        if os.path.getsize(fp) > 500_000:
+                            continue
+                        sample = open(fp, encoding="utf-8", errors="replace").read(8000)
+                        for pat in SECRET_PATTERNS:
+                            if pat.search(sample):
+                                findings.append(
+                                    AuditFinding(
+                                        "HIGH", 6, "secret_pattern",
+                                        f"Secret material pattern in {fp}",
+                                    )
+                                )
+                                break
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    # SSH authorized_keys world-readable
+    try:
+        for user in pwd.getpwall():
+            ak = os.path.join(user.pw_dir, ".ssh", "authorized_keys")
+            if os.path.isfile(ak):
+                try:
+                    mode = os.stat(ak).st_mode & 0o777
+                    if mode & 0o044:
+                        findings.append(
+                            AuditFinding(
+                                "HIGH", 6, "secret_authkeys_perm",
+                                f"World/group-readable authorized_keys: {user.pw_name}",
+                            )
+                        )
+                except OSError:
+                    continue
+    except (OSError, KeyError):
+        pass
+    return findings
 
 
 def run(state: dict, cfg: dict) -> list[AuditFinding]:
@@ -95,6 +255,63 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                         )
             except OSError:
                 continue
+
+    # Persistence baseline diff
+    current_persist = _collect_persistence_entries()
+    persist_baseline: dict = ab.setdefault("persistence", {})
+    if persist_baseline:
+        for path, digest in current_persist.items():
+            prev = persist_baseline.get(path)
+            if prev is None:
+                sev = _persistence_severity(path)
+                findings.append(
+                    AuditFinding(
+                        sev, 6, "persist_new",
+                        f"New persistence entry: {path}",
+                        {"path": path},
+                    )
+                )
+            elif prev != digest:
+                try:
+                    hint = open(path, encoding="utf-8", errors="replace").read(500)
+                except OSError:
+                    hint = ""
+                sev = _persistence_severity(path, hint)
+                findings.append(
+                    AuditFinding(
+                        sev, 6, "persist_modified",
+                        f"Modified persistence entry: {path}",
+                        {"path": path},
+                    )
+                )
+        for path in persist_baseline:
+            if path not in current_persist:
+                findings.append(
+                    AuditFinding(
+                        "MEDIUM", 6, "persist_removed",
+                        f"Persistence entry removed: {path}",
+                    )
+                )
+    ab["persistence"] = current_persist
+
+    # systemd timers (NC-7 extension)
+    timer_units = run_cmd_safe(
+        ["systemctl", "list-unit-files", "--type=timer", "--state=enabled"]
+    )
+    timer_list = [ln.split()[0] for ln in timer_units.splitlines() if ln.endswith("enabled")]
+    timer_baseline: list = ab.setdefault("timers", [])
+    for timer in timer_list:
+        if timer_baseline and timer not in timer_baseline:
+            cat = run_cmd_safe(["systemctl", "cat", timer])
+            sev = "HIGH"
+            if any(p in cat for p in ("/tmp", "/var/tmp", "/dev/shm", "curl", "wget")):
+                sev = "CRITICAL"
+            findings.append(
+                AuditFinding(sev, 6, "NC-7-newtimer", f"New enabled timer: {timer}")
+            )
+    ab["timers"] = timer_list
+
+    findings.extend(_scan_secrets(cfg))
 
     # NC-7: Systemd service integrity
     enabled = run_cmd_safe(["systemctl", "list-unit-files", "--type=service", "--state=enabled"])

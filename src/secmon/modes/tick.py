@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from secmon.alerts import dispatch
+from secmon.alerts import dispatch, findings_to_alerts
 from secmon.anomaly import detect_anomalies
+from secmon.audit import run_audit
 from secmon.baseline import check_baseline_staleness, record_sample, suggest_calibration
 from secmon.botnet import detect_and_block
 from secmon.checks import run_checks
@@ -35,6 +36,30 @@ def run_tick(state: dict, cfg: dict) -> int:
     last_botnet = parse_iso(ms.get("last_botnet_check"))
     if not last_botnet or (utcnow() - last_botnet).total_seconds() >= 6 * 3600:
         alerts.extend(detect_and_block(state, cfg))
+
+    # Deep audit every 6h — bridge CRITICAL/HIGH findings into alert pipeline
+    last_audit = parse_iso(ms.get("last_audit_check"))
+    if not last_audit or (utcnow() - last_audit).total_seconds() >= 6 * 3600:
+        try:
+            result = run_audit(state, cfg)
+            from secmon.audit.base import AuditFinding
+
+            findings = [
+                AuditFinding(
+                    f["severity"],
+                    f["layer"],
+                    f["check_id"],
+                    f["message"],
+                    f.get("detail", {}),
+                )
+                for f in result.get("findings", [])
+            ]
+            alerts.extend(findings_to_alerts(findings, min_severity="HIGH"))
+            state["last_audit_score"] = result.get("total_score", 0)
+            state["last_audit_findings"] = result.get("findings", [])
+            ms["last_audit_check"] = utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception as exc:
+            logger.error("scheduled audit failed: %s", exc)
 
     # Daily digest at 08:00 UTC
     now = utcnow()

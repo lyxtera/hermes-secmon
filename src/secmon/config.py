@@ -84,9 +84,9 @@ def default_config() -> dict[str, Any]:
             "solo_min_hits": 500,
             "bulletproof_prefixes": [],
         },
-        "alerting": {
-            "webhook_url": "",
-            "webhook_min_level": "CRITICAL",
+        "hermes": {
+            "deliver_target": "",
+            "min_severity": "HIGH",
         },
         "suspicious_ports": {
             "ranges": [[6660, 6700]],
@@ -94,6 +94,13 @@ def default_config() -> dict[str, Any]:
         },
         "dns": {
             "expected_nameservers": [],
+        },
+        "installation": {
+            "source_dir": "/opt/secmon",
+            "cli_path": "/usr/local/bin/secmon",
+            "cron_marker": "secmon --tick",
+            "hermes_cron_job": "secmon-tick",
+            "venv_dir": "/opt/secmon/venv",
         },
         "metrics": {
             "thresholds": copy.deepcopy(DEFAULT_METRIC_THRESHOLDS),
@@ -155,7 +162,7 @@ def _apply_env(cfg: dict) -> None:
             "own_ip": ["whitelist", "own_ip"],
             "data_dir": ["general", "data_dir"],
             "log_file": ["general", "log_file"],
-            "webhook_url": ["alerting", "webhook_url"],
+            "deliver_target": ["hermes", "deliver_target"],
             "anomaly_cooldown_minutes": ["anomaly", "cooldown_minutes"],
             "baseline_min_samples": ["anomaly", "baseline_min_samples"],
             "cache_ttl_seconds": ["anomaly", "cache_ttl_seconds"],

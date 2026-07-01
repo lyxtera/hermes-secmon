@@ -119,13 +119,6 @@ def test_save_state_disk_error(cfg, state, monkeypatch):
     assert save_state(cfg, state) is False
 
 
-def test_webhook_low_severity_skipped(cfg):
-    cfg["alerting"]["webhook_url"] = "http://x"
-    cfg["alerting"]["webhook_min_level"] = "CRITICAL"
-    from secmon.alerts import _send_webhook
-    _send_webhook(cfg, Alert("HIGH", "t", "m", "k", {}))
-
-
 def test_env_override_sigma_below(monkeypatch, tmp_path):
     monkeypatch.setenv("SECMON_OVERRIDE_SSH_FAILED_24H_SIGMA_BELOW", "1.5")
     cfg = load_config(overrides={"general": {"data_dir": str(tmp_path)}})

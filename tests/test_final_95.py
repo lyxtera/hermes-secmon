@@ -67,21 +67,6 @@ def test_compliance_debsums_critical(cfg, state, mock_commands):
     assert any("NC-10-critical" in f.check_id for f in findings)
 
 
-def test_webhook_dispatch_error(cfg):
-    cfg["alerting"]["webhook_url"] = "http://example.com/hook"
-    cfg["alerting"]["webhook_min_level"] = "HIGH"
-
-    def fail_runner(args, **kwargs):
-        raise OSError("network down")
-
-    from secmon.shell import set_runner
-    from secmon.alerts import Alert, _send_webhook
-
-    set_runner(fail_runner)
-    _send_webhook(cfg, Alert("HIGH", "t", "m", "k", {}))
-    set_runner(None)
-
-
 def test_state_corrupt_backup_fails(cfg, tmp_path, monkeypatch):
     cfg["general"]["data_dir"] = str(tmp_path)
     from secmon.config import state_file_path

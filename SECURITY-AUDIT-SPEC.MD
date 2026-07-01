@@ -99,7 +99,7 @@ This system provides continuous security monitoring for a single cloud VPS runni
 │   Filters:  dedup by key + time window                       │
 │   Outputs:  → structured log file (always)                   │
 │             → stdout (only if findings exist)                │
-│             → webhook (optional, severity-gated)             │
+│             → Hermes Gateway (cron captures stdout, delivers) │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -119,7 +119,7 @@ The system is divided into these concerns (language-agnostic names):
 | **Deep Audit Engine** | Multi-layer forensic audit (8+ layers), each independent | Shell commands |
 | **Botnet Blocker** | Subnet clustering, threshold evaluation, iptables manipulation, whitelist enforcement | Shell commands |
 | **Alert Dispatcher** | Deduplicate findings, format output, route to all configured outputs | State Manager, Configuration |
-| **Output Presenters** | Format findings for terminal, JSON, daily digest, webhook payload | Alert Dispatcher |
+| **Output Presenters** | Format findings for terminal, JSON, daily digest, Hermes Gateway delivery | Alert Dispatcher |
 
 ### 2.3 Design Rules
 
@@ -292,8 +292,8 @@ The system must run without any configuration file present, using only defaults.
 | **Botnet** | `min_ips_per_subnet` | `3` | Minimum unique IPs in a /24 to consider it a botnet |
 | **Botnet** | `min_hits_per_subnet` | `100` | Minimum total hits from a /24 to block |
 | **Botnet** | `solo_min_hits` | `500` | Single IP hit count that triggers /24 block |
-| **Alerting** | `webhook_url` | `""` (disabled) | Optional HTTP endpoint for critical alerts |
-| **Alerting** | `webhook_min_level` | `CRITICAL` | Minimum severity to dispatch via webhook |
+| **Hermes** | `deliver_target` | `""` (disabled) | Gateway platform for cron delivery (telegram, discord, slack, …) |
+| **Hermes** | `min_severity` | `HIGH` | Minimum severity for tick alert stdout output |
 | **Suspicious Ports** | `ranges` | IRC: 6660-6700 | Port ranges to flag on outbound connections |
 | **Suspicious Ports** | `specific` | 4444, 5555, 8080, 9090 | Specific C2/proxy ports to flag |
 | **Metrics** | `overrides` | `{}` | Per-metric threshold overrides |
@@ -620,7 +620,52 @@ Each check is an independent function that returns either `nil` (no finding) or 
 
 **Dedup:** Per `{destination_ip}:{destination_port}`, 24-hour window.
 
-### 7.3 Check Execution Pattern
+Additional C2 heuristics (implemented):
+- Track first-seen time per outbound connection; alert on sessions older than 1 hour to external IPs.
+- Alert on new outbound from privileged processes (`root`, `www-data`, `nginx`, `apache`).
+- Alert on direct-IP HTTPS (port 443/8443) without hostname context.
+- Alert on privileged outbound to common C2 ports (4444, 5555, 853, 9050, etc.).
+
+**Dedup keys:** `outbound:`, `c2:new_priv:`, `c2:long:`, `c2:direct_https:`, `c2:port:` — 1h–24h windows.
+
+#### 7.2.9 Secmon Self-Protection Monitor
+
+**Purpose:** Detect tampering with the monitor itself — the highest-priority bypass vector after compromise.
+**Severity:** CRITICAL / HIGH
+
+**Logic:**
+1. On each tick, record `last_tick` and alert if gap > 20 minutes (missed cron).
+2. Verify cron entry containing `secmon --tick` exists in root crontab.
+3. Verify `installation.source_dir` symlink target has not changed since baseline.
+4. Verify `installation.cli_path` symlink target has not changed.
+5. SHA-256 baseline all `src/secmon/**/*.py` under source dir; alert on changes.
+6. SHA-256 baseline config file; alert on changes; alert on Hermes delivery target changes.
+7. Verify config/state/log permissions (config/state ≤ 600, data_dir ≤ 700).
+8. Detect log truncation (size decrease).
+9. Detect state baseline reset (empty baselines after prior populated state).
+10. Maintain chained integrity record in `audit_baseline.self_protection`.
+
+**Dedup:** `self_prot:` prefix, 1-hour window (missed tick: per-event).
+
+### 7.4 Audit-to-Alert Bridge
+
+CRITICAL and HIGH findings from deep audit layers are converted to `Alert` objects and dispatched through the same pipeline as realtime checks:
+
+```
+function findings_to_alerts(findings, min_severity=HIGH):
+    for each finding where severity >= min_severity:
+        alert.source = "audit:{check_id}"
+        alert.dedup_key = "audit:{check_id}:{message_prefix}"
+        dispatch(alert)
+```
+
+Triggered from:
+- `--audit` mode (always)
+- `--tick` mode (every 6 hours via internal `last_audit_check` scheduling)
+
+**Dedup:** `audit:` prefix, 6-hour window.
+
+### 7.5 Check Execution Pattern
 
 ```
 function run_checks(state):
@@ -737,21 +782,57 @@ The deep audit runs every 6 hours (LLM-driven) and covers these layers. Each lay
 | Risk score trending | Track total risk score over time. Alert on sudden increases. |
 | Finding category breakdown | Group findings by category and track per-category trends. |
 
-### 8.10 Additional Checks Already in a Conceptual Design Phase
-
-These are checks that go beyond the standard forensic layers but have been prototyped or discussed:
+### 8.10 Advanced Compromise Detection (Implemented)
 
 #### Process Hollowing / Code Injection Detection
 
-Scan process memory maps for unusual executable regions, specifically looking for anonymous executable mappings (rwx without file backing) which indicate code injection or process hollowing.
+Scan `/proc/*/maps` for:
+- Executable mappings with `(deleted)` pathnames
+- Anonymous executable regions (`[anon:...]` or empty path with `x` permission)
+- RWX anonymous regions
 
-#### Cron/at Job Injection Detection
+**Severity:** CRITICAL | **check_id:** `proc_hollow_*`
 
-Monitor all crontabs and at jobs for entries that were not present in the previous scan. Flag new entries from non-standard locations.
+#### Persistence Baseline Diff
+
+Baseline SHA-256 hashes for:
+- System and user crontabs, `/etc/cron.*`, `/var/spool/cron/crontabs/*`
+- `at` queue (`atq` output)
+- Enabled systemd timers and custom service units/overrides
+- `rc.local`, `/etc/profile`, shell profiles, user systemd units
+
+Alert on new, modified, or removed entries. Severity escalates for `/tmp` paths or `curl | bash` patterns.
+
+**check_id:** `persist_new`, `persist_modified`, `persist_removed`, `NC-7-newtimer`
+
+#### Process Lineage & Root Execution
+
+- Flag web/app servers spawning shells or download tools
+- Flag interpreter injection one-liners in cmdline
+- Flag root-owned processes executing from `/tmp`, `/var/tmp`, `/dev/shm`, or deleted binaries
+
+**check_id:** `proc_lineage_*`, `proc_root_*`
+
+#### Secret / Credential Exposure
+
+- World-readable private keys, `.env`, credentials in web roots and temp dirs
+- Private keys in `/tmp`, `/var/tmp`, `/dev/shm`
+- Pattern match for PEM blocks, AWS keys, API key assignments
+- Group/world-readable `authorized_keys`
+
+**check_id:** `secret_*`
+
+#### Kernel / eBPF Tamper (extended NC-9)
+
+- Kernel tainted flag, sysctl relaxation (`modules_disabled`)
+- New BPF programs and maps vs baseline
+- Unprivileged BPF enabled with loaded programs
+
+**check_id:** `kernel_*`, `NC-9-*`
 
 #### SSH Key Rotation Tracking
 
-Maintain a hash of all authorized_keys files. Flag any addition, removal, or modification. Track the number of keys per user.
+Maintain a hash of all authorized_keys files. Flag any addition, removal, or modification. Track the number of keys per user. (NC-5 in auth layer.)
 
 ---
 
@@ -973,7 +1054,7 @@ Alert {
   source: String           // Which check/module produced this: "fail2ban", "anomaly", etc.
   message: String          // Human-readable one-line finding
   dedup_key: String        // Unique key for suppression ("f2b:1.2.3.4", "anomaly:ssh_failed_24h+above")
-  structured: Map          // Machine-readable detail for log parsing and webhook JSON
+  structured: Map          // Machine-readable detail for log parsing and gateway delivery
 }
 ```
 
@@ -998,10 +1079,33 @@ Alert {
 Alert → [Dedup Check] → if new:
     → Structured log file (always, JSON lines)
     → stdout (only if severity ≥ INFO and output mode is not silent)
-    → Webhook (only if severity ≥ configured webhook_min_level and webhook_url is set)
+    → Hermes Gateway (Hermes Cron no-agent jobs capture stdout and deliver
+      to the configured platform adapter; empty stdout = silent tick)
 ```
 
-### 11.4 Log Format
+### 11.4 Hermes Gateway Delivery
+
+Notifications are **not** sent via direct HTTP webhooks. Instead:
+
+1. **Hermes Cron** runs secmon wrapper scripts (`scripts/tick.sh`, `scripts/audit.sh`, `scripts/daily.sh`) in **no-agent mode** (zero LLM cost).
+2. Scripts invoke `secmon` CLI modes; findings are printed to **stdout**.
+3. The **Hermes Gateway** scheduler captures script stdout and delivers it to the configured platform (`hermes.deliver_target`: telegram, discord, slack, signal, etc.).
+4. **Silent ticks:** when no findings exist, stdout is empty and no notification is sent.
+
+For on-demand delivery outside cron:
+
+```bash
+secmon --check | hermes send --deliver telegram
+```
+
+Configuration:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `hermes.deliver_target` | `""` | Gateway platform target for cron job delivery |
+| `hermes.min_severity` | `HIGH` | Minimum severity for tick alert stdout output |
+
+### 11.5 Log Format
 
 Structured JSON lines, one object per line:
 
@@ -1011,7 +1115,7 @@ Structured JSON lines, one object per line:
 
 Rotate via standard `logrotate` configuration (daily rotation, 30-day retention, compress).
 
-### 11.5 Output Formats by Mode
+### 11.6 Output Formats by Mode
 
 | Mode | Stdout Behavior |
 |---|---|
@@ -1022,45 +1126,66 @@ Rotate via standard `logrotate` configuration (daily rotation, 30-day retention,
 | `status` | Always produces report — current baselines and state. |
 | `audit` | Always produces JSON report — passed to LLM summarizer. |
 
-### 11.6 Webhook Payload
+### 11.7 Hermes Plugin Integration
 
-```
-{
-  "severity": "HIGH",
-  "source": "fail2ban",
-  "hostname": "<server hostname>",
-  "timestamp": "2026-06-29T10:57:00Z",
-  "message": "New SSH ban: 1.2.3.4",
-  "structured": {
-    "new_bans": ["1.2.3.4"],
-    "total_blocked_subnets": 41
-  }
-}
-```
+When deployed as a Hermes Agent plugin (`secmon`), the monitor exposes:
 
-Deliver via simple HTTP POST using a subprocess call to `curl` (avoids TLS library dependencies).
+| Capability | Mechanism |
+|---|---|
+| LLM-callable tools | `secmon_status`, `secmon_check`, `secmon_audit`, `secmon_record`, `secmon_daily`, `secmon_detect_botnet` |
+| Slash command | `/secmon [mode]` |
+| Context injection | `pre_llm_call` hook injects security summary into agent turns |
+| Pip discovery | `[project.entry-points."hermes_agent.plugins"] secmon = "secmon_plugin"` |
 
 ---
 
 ## 12. Scheduling & Cron Architecture
 
-### 12.1 Two-Tier Scheduling Principle
+### 12.1 Hermes Cron (no-agent mode)
 
-| Frequency | Execution Type | Rationale |
-|---|---|---|
-| Every 1–15 minutes | Direct script execution (no LLM) | Zero token cost, instant, no rate limits |
-| Every 6+ hours | LLM-driven analysis | Reasoning, summarization, natural language output |
+All scheduled execution is handled by the **Hermes Gateway cron scheduler**, not OS crontab or systemd timers. Jobs run in **no-agent mode**: the script runs directly, stdout is delivered verbatim, zero LLM involvement.
 
-Never use LLM-driven execution for intervals under 15 minutes — it burns tokens and hits API rate limits on free-tier models.
+Prerequisites:
+
+- Hermes Gateway running (`hermes gateway start`)
+- Plugin enabled (`hermes plugins enable secmon`)
+- `hermes.deliver_target` set in config
 
 ### 12.2 Job Definitions
 
+| Job Name | Schedule | Script | Mode | Hermes `no_agent` | Delivery |
+|---|---|---|---|---|---|
+| **secmon-tick** | `*/15 * * * *` | `scripts/tick.sh` | `--tick` | yes | Gateway (if stdout non-empty) |
+| **secmon-audit** | `0 */6 * * *` | `scripts/audit.sh` | `--audit` | yes | Gateway (JSON report) |
+| **secmon-daily** | `0 8 * * *` | `scripts/daily.sh` | `--daily` | yes | Gateway (always produces output) |
+
+Registration (example):
+
+```bash
+hermes cron add "*/15 * * * *" --no-agent \
+  --script /opt/secmon/scripts/tick.sh --name secmon-tick --deliver telegram
+```
+
+See `cron/jobs.yaml` for the full declarative job list.
+
+### 12.3 Two-Tier Scheduling Principle
+
+| Frequency | Execution Type | Rationale |
+|---|---|---|
+| Every 1–15 minutes | Hermes Cron no-agent script | Zero token cost, instant, Gateway delivery |
+| Every 6+ hours | Hermes Cron no-agent script (audit JSON) | Structured output for operator review or LLM summarization in chat |
+
+Never use LLM-driven cron for intervals under 15 minutes — use no-agent script mode instead.
+
+### 12.4 Job Definitions (legacy reference)
+
 | Job Name | Schedule | Execution | Delivery | Purpose |
 |---|---|---|---|---|
-| **Security Tick** | Every 15 min | Direct (no LLM) | Log file only | Realtime checks + anomaly detection + scheduling internal tasks |
-| **Security Audit** | Every 6 hours | LLM analysis | Operator chat | Deep audit summary in natural language |
+| **Security Tick** | Every 15 min | `scripts/tick.sh` → `--tick` | Hermes Gateway | Realtime checks + anomaly detection + internal scheduling |
+| **Security Audit** | Every 6 hours | `scripts/audit.sh` → `--audit` | Hermes Gateway | Deep audit JSON report |
+| **Daily Digest** | 08:00 UTC | `scripts/daily.sh` → `--daily` | Hermes Gateway | Human-readable daily summary |
 
-### 12.3 Internal Scheduling (within Tick)
+### 12.5 Internal Scheduling (within Tick)
 
 The `tick` mode runs every 15 minutes but internally schedules less frequent tasks:
 
@@ -1070,22 +1195,24 @@ The `tick` mode runs every 15 minutes but internally schedules less frequent tas
 | Anomaly detection | Every tick (15 min) | Always runs (with metric cache) |
 | Baseline recording | Every 6 hours | Checks `last_record` timestamp; if ≥ 6h ago, records and updates timestamp |
 | Botnet detection | Every 6 hours | Checks `last_botnet_check` timestamp; if ≥ 6h ago, runs detection |
+| Deep audit + alert bridge | Every 6 hours | Runs full audit; dispatches CRITICAL/HIGH findings via alert pipeline |
 | Daily digest | 08:00 UTC | Checks if `last_daily` date ≠ today's date; if so, produces report |
 
-This consolidation means only one cron entry is needed for all high-frequency work.
+This consolidation means only one Hermes cron entry (`secmon-tick`) is needed for all high-frequency work.
 
-### 12.4 Audit Job Structure
+### 12.6 Audit Job Structure
 
 The 6-hour audit job:
-1. Executes the deep audit script in JSON output mode.
-2. The JSON output is provided to an LLM for natural-language summarization.
-3. The LLM summarizes findings, highlights CRITICAL/HIGH items, and notes trends.
-4. The summary is delivered to the operator.
+1. Hermes Cron runs `scripts/audit.sh` in no-agent mode.
+2. The script executes `--audit` and prints JSON to stdout.
+3. Hermes Gateway delivers the JSON report to the configured platform.
+4. Optionally, the operator can ask Hermes in chat to summarize the audit JSON.
 
-### 12.5 Cron Health Monitoring
+### 12.7 Cron Health Monitoring
 
 The `tick` mode logs start and end timestamps. Missing ticks are detectable:
-- If `last_record` timestamp is > 6 hours old, a tick was missed.
+- Self-protection check alerts if `last_tick` gap > 20 minutes.
+- If `last_record` timestamp is > 6 hours old, baseline recording was missed.
 - If `last_anomaly_check` timestamp is > 20 minutes old, a tick was missed.
 
 ---
@@ -1438,35 +1565,71 @@ New checks slot into the existing layer framework:
 
 - Debian 12 (Bookworm) or compatible
 - Root access (required for iptables manipulation, journalctl -k, /proc inspection)
-- Python 3.9+ (or equivalent runtime for the chosen language)
+- Python 3.11+ (or equivalent runtime for the chosen language)
+- **Hermes Agent** with Gateway running (`hermes gateway start`)
 - Packages: `iptables`, `fail2ban`, `netfilter-persistent` (optional for boot persistence)
 
-### 15.2 Installation Checklist
+### 15.2 Installation (Hermes Plugin + Symlink-Based)
 
-1. Create data directory for state, snapshots, and configuration.
-2. Place all source files in the data directory.
-3. Create cron entry point script referencing the main entry point.
-4. Run in manual mode first: `--status` to verify operation, `--check` to test detection.
-5. Run `--record` several times to build an initial baseline (wait 24h minimum for meaningful data).
-6. After baseline is established, create the cron job for `--tick` mode at delivery=local for 24h.
-7. Review logs for false positives. Adjust thresholds via config overrides.
-8. Create the 6-hour audit cron job.
-9. Switch to delivery=origin for both if operator-facing alerts are desired.
+**Principle:** The source checkout is never copied. Stable operational paths are symlinks. The monitor is registered as a Hermes Agent plugin.
 
-### 15.3 Rollback Procedure
+| Path | Purpose |
+|---|---|
+| `/opt/secmon` | Symlink → source checkout |
+| `/usr/local/bin/secmon` | Symlink → venv CLI entry point |
+| `/etc/secmon/config.yaml` | Configuration (mode 600) |
+| `/var/lib/secmon/` | State and snapshots (mode 700) |
+| `/var/log/security-monitor.log` | Structured alert log |
+| `src/secmon_plugin/` | Hermes plugin (`register`, tools, schemas) |
+| `plugin.yaml` | Hermes plugin manifest |
 
-1. Pause the tick cron job.
+**Automated install:**
+
+```bash
+sudo ./scripts/install.sh [--repo PATH] [--source /opt/secmon] [--skip-hermes-cron]
+```
+
+**Hermes plugin install (alternative):**
+
+```bash
+hermes plugins install <owner>/security-audit --enable
+sudo /opt/secmon/scripts/install.sh
+```
+
+**Checklist:**
+
+1. Clone repository to a root-owned, non-world-writable path.
+2. Run `scripts/install.sh` to create symlinks, venv, config.
+3. Enable plugin: `hermes plugins enable secmon`.
+4. Set `whitelist.own_ip`, `hermes.deliver_target`, and `installation.*` paths in config.
+5. Register Hermes cron jobs (installer does this automatically, or see `cron/jobs.yaml`).
+6. Ensure Gateway is running: `hermes gateway start`.
+7. Run `--status`, then `--record` over 24h+ for baselines.
+8. Review logs; tune thresholds.
+
+### 15.3 Uninstallation
+
+```bash
+sudo ./scripts/uninstall.sh [--purge] [--remove-botnet]
+```
+
+Removes symlinks, venv, Hermes cron jobs (`secmon-tick`, `secmon-audit`, `secmon-daily`), and disables the plugin. Preserves source checkout and state/config/logs unless `--purge`.
+
+### 15.4 Rollback Procedure
+
+1. Pause Hermes cron jobs: `hermes cron pause secmon-tick` (and audit/daily).
 2. If state file corruption is suspected, restore from the most recent daily snapshot.
-3. If old version scripts exist, re-point cron to previous entry point.
-4. If iptables BOTNET chain changes need reverting, use the unblock utility.
+3. Re-point `/opt/secmon` symlink to a previous checkout if needed.
+4. If iptables BOTNET chain changes need reverting, use `scripts/uninstall.sh --remove-botnet`.
 
-### 15.4 Upgrade Path
+### 15.5 Upgrade Path
 
 When deploying a new version:
 1. Deploy new code alongside old (versioned subdirectory).
-2. Cron entry points to a symlink — update symlink to switch versions.
-3. Run state migration if schema version changed.
-4. Monitor for 24h before declaring success.
+2. Symlink `/opt/secmon` points to checkout — update symlink to switch versions.
+3. Restart Hermes gateway to reload plugin: `hermes gateway restart`.
+4. Run state migration if schema version changed.
+5. Monitor for 24h before declaring success.
 
 ---
 
@@ -1487,14 +1650,15 @@ The security monitor is itself an attack target. An attacker who compromises the
 | **Input validation** | All values read from state file or config are validated before use. Unexpected types or ranges are replaced with defaults. |
 | **Output sanitization** | Alert messages containing user-controllable data (IP addresses, usernames) are sanitized to prevent log injection (no newlines, no control characters). |
 | **Self-audit** | The monitor's own binaries, config files, and state directory are included in the file integrity audit (Layer 1). Any tampering is self-reported. |
-| **Cron job integrity** | The tick cron job is verified as part of the persistence mechanism audit (Layer 6). |
+| **Self-protection realtime check** | TC-9 (§7.2.9): Hermes cron integrity, symlink targets, code/config hashes, log truncation, delivery target changes, missed ticks. |
+| **Hermes cron job integrity** | Cron jobs verified as part of persistence mechanism audit (Layer 6) and self-protection check. |
 | **Log tampering detection** | The monitor's own log file is monitored for unexpected truncation or permission changes. |
 
 ### 16.3 What the Monitor Deliberately Does NOT Do
 
 - **No network listening.** The monitor never opens ports or accepts remote connections. All data is gathered via local system tools.
 - **No auto-mitigation beyond botnet blocking.** The monitor does not automatically kill processes, delete files, or change configurations (except for hardening playbook which requires explicit operator invocation).
-- **No data exfiltration.** All data stays on the local system. Webhook dispatch is opt-in and only sends specific structured alerts.
+- **No data exfiltration.** All data stays on the local system. Gateway delivery is opt-in and only sends stdout from scheduled scripts or explicit `hermes send` invocations.
 
 ---
 
@@ -1513,7 +1677,7 @@ The security monitor is itself an attack target. An attacker who compromises the
 | Concurrent tick processes | Prevented by cron scheduler lock. If somehow concurrent, atomic rename ensures last writer wins without corruption. |
 | First baseline recording (no prior data) | All metrics collected, stored as one sample. No anomaly detection until `baseline_min_samples` reached. |
 | Daily report runs before any data exists | Show "no baseline" for all metrics, report only current raw values. |
-| Webhook URL is unreachable | Subprocess timeout (10 seconds). Log error, continue without crashing. |
+| Hermes Gateway unreachable | Cron job still runs and logs locally. Delivery failure is recorded in Hermes cron metadata; local structured log retains all alerts. |
 | IPv6-heavy environment | IP extraction regex patterns check for both v4 and v6. IPv6 addresses are tracked separately. Log a warning if IPv6 attack traffic is detected but not fully handled. |
 | Server has no public IP (NAT-only) | `own_ip` should be set to the NAT gateway IP or empty. Whitelist checks skip self-filtering. |
 | Unusual locale or language in journalctl output | Metric pattern matching uses position-independent regex (not language-dependent string matching where possible). |
@@ -1591,10 +1755,14 @@ Is there an active compromise?
 │                    DEBIAN 12 CLOUD VPS                          │
 │                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    CRON SCHEDULER                         │  │
+│  │              HERMES GATEWAY + CRON SCHEDULER              │  │
 │  │                                                          │  │
-│  │  Every 15 min ──→ tick entry point (direct execution)    │  │
-│  │  Every 6 hours ─→ audit entry point (LLM analysis)       │  │
+│  │  secmon-tick  (*/15) ──→ scripts/tick.sh  (no-agent)     │  │
+│  │  secmon-audit (6h)   ──→ scripts/audit.sh (no-agent)     │  │
+│  │  secmon-daily (08:00)──→ scripts/daily.sh (no-agent)     │  │
+│  │                       │                                   │  │
+│  │                       ▼                                   │  │
+│  │              Gateway delivery (telegram, slack, …)         │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                  │
 │                              ▼                                  │

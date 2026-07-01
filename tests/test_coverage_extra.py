@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from secmon.__main__ import main
-from secmon.alerts import Alert, _send_webhook, _log_alert
+from secmon.alerts import Alert, _log_alert
 from secmon.audit import process as audit_process
 from secmon.audit import file_integrity, network, auth, logs, threat_intel, compliance
 from secmon.baseline import check_baseline_staleness, suggest_calibration
@@ -92,17 +92,6 @@ def test_detect_botnet_mode(cfg, state, mock_commands):
     mock_commands(["iptables", "-L", "BOTNET", "-n"], "")
     rc = run_detect_botnet(state, cfg)
     assert rc == 0
-
-
-def test_webhook_dispatch(cfg, state, mock_commands):
-    cfg["alerting"]["webhook_url"] = "http://example.com/hook"
-    cfg["alerting"]["webhook_min_level"] = "HIGH"
-    mock_commands(
-        ["curl", "-sS", "-m", "10", "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"severity": "HIGH"}', "http://example.com/hook"],
-        "",
-    )
-    a = Alert("HIGH", "test", "msg", "test:1", {})
-    _send_webhook(cfg, a)
 
 
 def test_shell_timeout():
