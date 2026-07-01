@@ -23,10 +23,27 @@ if [[ -f "${CONFIG}" ]]; then
   ARGS+=(--config "${CONFIG}")
 fi
 
-# Hermes cron considers non-zero exit codes as job failures.
-# Ignore secmon exit codes in cron context; delivery depends on stdout.
+_timestamp_utc() {
+  date -u '+%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u
+}
+
 set +e
-"${CLI}" "${ARGS[@]}"
+OUT="$("${CLI}" "${ARGS[@]}" 2>/dev/null)"
 _rc=$?
 set -e
+
+if [[ -z "${OUT}" ]]; then
+  exit 0
+fi
+
+echo "=== secmon audit — $(_timestamp_utc) ==="
+echo
+echo "${OUT}"
+echo
+echo "--- What to do next ---"
+echo "1) Review CRITICAL/HIGH findings in the JSON above."
+echo "2) Ask Hermes to summarize, prioritize, and propose remediation steps."
+echo
+echo "CTA: /secmon audit"
+
 exit 0

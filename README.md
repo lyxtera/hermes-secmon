@@ -6,7 +6,7 @@ Designed to run as root on a single VPS. Silent when normal — output appears o
 
 ## Features
 
-- **Hermes plugin integration** — six LLM-callable tools, `/secmon` slash command, and `pre_llm_call` security context injection
+- **Hermes plugin integration** — seven LLM-callable tools, `/secmon` and `/secmon_remediate` slash commands, and `pre_llm_call` security context injection
 - **Hermes Gateway notifications** — cron jobs capture script stdout and deliver to Telegram, Discord, Slack, and other configured platforms
 - **Hermes Cron scheduling** — no-agent watchdog jobs for tick (15 min), audit (6 h), and daily digest (08:00 UTC)
 - **11 metrics** — SSH failures, attacker IPs/subnets, fail2ban bans, botnet rules, kernel errors, listening ports, and more
@@ -142,13 +142,13 @@ See [`cron/jobs.yaml`](cron/jobs.yaml) for job definitions. Example:
 DELIVER=telegram   # or discord, slack, etc.
 
 hermes cron add "*/15 * * * *" --no-agent \
-  --script /opt/secmon/scripts/tick.sh --name secmon-tick --deliver "${DELIVER}"
+  --script secmon/tick.sh --name secmon-tick --deliver "${DELIVER}"
 
 hermes cron add "0 */6 * * *" --no-agent \
-  --script /opt/secmon/scripts/audit.sh --name secmon-audit --deliver "${DELIVER}"
+  --script secmon/audit.sh --name secmon-audit --deliver "${DELIVER}"
 
 hermes cron add "0 8 * * *" --no-agent \
-  --script /opt/secmon/scripts/daily.sh --name secmon-daily --deliver "${DELIVER}"
+  --script secmon/daily.sh --name secmon-daily --deliver "${DELIVER}"
 ```
 
 Hermes Cron no-agent mode runs the script on schedule and delivers stdout verbatim via the Gateway. Empty stdout on a clean tick = silent (no notification).
@@ -178,13 +178,15 @@ When enabled (`hermes plugins enable secmon`), the agent can call:
 | `secmon_record` | Collect metrics and append baseline sample |
 | `secmon_daily` | Human-readable daily security digest |
 | `secmon_detect_botnet` | Botnet /24 analysis and iptables blocking |
+| `secmon_remediate` | Apply safe remediation actions (e.g. fix file permissions) |
 
-Slash command:
+Slash commands:
 
 ```text
 /secmon status
 /secmon check
 /secmon audit
+/secmon_remediate self_protection_fix_permissions
 ```
 
 A `pre_llm_call` hook injects a short security context summary (last audit score, open findings, baseline status) into each agent turn.
@@ -193,9 +195,27 @@ A `pre_llm_call` hook injects a short security context summary (last audit score
 
 Notifications are **not** sent via webhooks. Instead:
 
-1. Hermes Cron runs a no-agent script (`scripts/tick.sh`, etc.)
-2. The script invokes `secmon` and prints findings to stdout
+1. Hermes Cron runs a no-agent script (`secmon/tick.sh`, `secmon/audit.sh`, `secmon/daily.sh` under `~/.hermes/scripts/`)
+2. The script invokes `secmon` and prints structured output to stdout
 3. The Hermes Gateway delivers stdout to the configured platform
+
+Every non-silent delivery follows this structure:
+
+```text
+=== secmon [tick|audit|daily] — YYYY-MM-DD HH:MM UTC ===
+
+[SEVERITY] source: message  →  reply /secmon audit
+...
+
+--- What to do next ---
+1) Context-appropriate remediation steps
+2) Verification commands
+
+CTA: /secmon audit   (or /secmon_remediate self_protection_fix_permissions, etc.)
+```
+
+- **Silent when normal:** empty stdout on a clean tick = no notification.
+- **Actionable:** each alert line includes a remediation hint; wrappers append a `What to do next` section and a single CTA command.
 
 Configure the delivery target in `/etc/secmon/config.yaml`:
 

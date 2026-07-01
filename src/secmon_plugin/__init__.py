@@ -41,7 +41,7 @@ def register(ctx: Any) -> None:
     ctx.register_command(
         "secmon",
         secmon_command,
-        "Run secmon: /secmon [status|check|audit|record|daily|detect-botnet|tick]",
+        "Run secmon: /secmon [status|check|audit|record|daily|detect-botnet|tick|remediate]",
     )
 
     def secmon_remediate_command(args: str, **kwargs: Any) -> str:

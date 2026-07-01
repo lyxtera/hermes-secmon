@@ -107,6 +107,13 @@ def audit_finding_to_alert(finding: Any) -> Alert:
     )
 
 
+def _stdout_remediation_hint(alert: Alert) -> str:
+    """Short per-alert hint for gateway/cron delivery."""
+    if alert.severity == "CRITICAL":
+        return " → reply /secmon audit (URGENT)"
+    return " → reply /secmon audit"
+
+
 def findings_to_alerts(
     findings: list[Any],
     *,
@@ -144,5 +151,8 @@ def dispatch(
         new_alerts.append(alert)
     if stdout and new_alerts:
         for a in new_alerts:
-            print(f"[{a.severity}] {a.source}: {sanitize_message(a.message)}")
+            print(
+                f"[{a.severity}] {a.source}: {sanitize_message(a.message)}"
+                f"{_stdout_remediation_hint(a)}"
+            )
     return new_alerts

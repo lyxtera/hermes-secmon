@@ -23,4 +23,27 @@ if [[ -f "${CONFIG}" ]]; then
   ARGS+=(--config "${CONFIG}")
 fi
 
-exec "${CLI}" "${ARGS[@]}"
+_timestamp_utc() {
+  date -u '+%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u
+}
+
+set +e
+OUT="$("${CLI}" "${ARGS[@]}" 2>/dev/null)"
+_rc=$?
+set -e
+
+if [[ -z "${OUT}" ]]; then
+  exit 0
+fi
+
+echo "=== secmon daily — $(_timestamp_utc) ==="
+echo
+echo "${OUT}"
+echo
+echo "--- What to do next ---"
+echo "1) Compare metrics and anomalies against baselines."
+echo "2) If anything looks unexpected, run a full forensic audit."
+echo
+echo "CTA: /secmon audit"
+
+exit 0

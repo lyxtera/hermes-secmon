@@ -1119,12 +1119,13 @@ Rotate via standard `logrotate` configuration (daily rotation, 30-day retention,
 
 | Mode | Stdout Behavior |
 |---|---|
-| `check` | Findings only. Silent (no stdout, exit 0) when normal. |
+| `tick` | Findings only when alerts exist. Cron wrapper adds header, remediation section, and CTA. Silent when normal. |
+| `check` | Findings only. Each line includes remediation hint (`→ reply /secmon audit`). Silent when normal. |
 | `record` | Always silent. Metrics go to state file only. |
-| `daily` | Always produces report — human-readable digest. |
+| `daily` | Human-readable digest with embedded CTA footer. Cron wrapper adds header and audit CTA. |
 | `detect-botnet` | Silent unless new subnets blocked. Reports what was blocked. |
 | `status` | Always produces report — current baselines and state. |
-| `audit` | Always produces JSON report — passed to LLM summarizer. |
+| `audit` | JSON report. Cron wrapper prepends header and appends triage CTA. |
 
 ### 11.7 Hermes Plugin Integration
 
@@ -1132,10 +1133,44 @@ When deployed as a Hermes Agent plugin (`secmon`), the monitor exposes:
 
 | Capability | Mechanism |
 |---|---|
-| LLM-callable tools | `secmon_status`, `secmon_check`, `secmon_audit`, `secmon_record`, `secmon_daily`, `secmon_detect_botnet` |
-| Slash command | `/secmon [mode]` |
+| LLM-callable tools | `secmon_status`, `secmon_check`, `secmon_audit`, `secmon_record`, `secmon_daily`, `secmon_detect_botnet`, `secmon_remediate` |
+| Slash commands | `/secmon [mode]`, `/secmon_remediate <action>` |
 | Context injection | `pre_llm_call` hook injects security summary into agent turns |
 | Pip discovery | `[project.entry-points."hermes_agent.plugins"] secmon = "secmon_plugin"` |
+
+### 11.8 Gateway Delivery Message Format
+
+All Hermes cron deliveries use a consistent, operator-friendly structure:
+
+```
+=== secmon [tick|audit|daily] — YYYY-MM-DD HH:MM UTC ===
+
+[CRITICAL] source: message  →  reply /secmon audit (URGENT)
+[HIGH] source: message  →  reply /secmon audit
+...
+
+--- What to do next ---
+1) Context-appropriate remediation steps (varies by alert source)
+2) Verification commands
+
+CTA: <exact Hermes command to trigger agent action>
+```
+
+**Remediation CTA mapping (tick):**
+
+| Alert source | Primary CTA |
+|---|---|
+| `self_protection` (permissions) | `/secmon_remediate self_protection_fix_permissions` |
+| `self_protection` (code/config drift) | `audit + remediate` |
+| `self_protection` (scheduler missing) | `/secmon status` + re-register cron jobs |
+| `brute_force` / `fail2ban` | `/secmon_detect_botnet` |
+| `outbound` / `c2` / `ssh` / `anomaly` / `audit` | `/secmon audit` |
+| *(fallback)* | `/secmon audit` |
+
+**Rules:**
+- Empty stdout = silent tick (no gateway delivery).
+- Cron wrappers always exit 0 (findings are not job failures).
+- Per-alert remediation hints are embedded in stdout by `dispatch()`; wrappers add the structured `What to do next` section and final CTA line.
 
 ---
 
@@ -1163,7 +1198,7 @@ Registration (example):
 
 ```bash
 hermes cron add "*/15 * * * *" --no-agent \
-  --script /opt/secmon/scripts/tick.sh --name secmon-tick --deliver telegram
+  --script secmon/tick.sh --name secmon-tick --deliver telegram
 ```
 
 See `cron/jobs.yaml` for the full declarative job list.
