@@ -137,6 +137,16 @@ if command -v hermes >/dev/null 2>&1; then
     fi
 
     echo "==> Registering Hermes cron jobs (no-agent mode)"
+    HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+    HERMES_SCRIPTS_DIR="${HERMES_HOME}/scripts"
+    mkdir -p "${HERMES_SCRIPTS_DIR}"
+
+    # Hermes Cron requires --script to be relative to ~/.hermes/scripts/.
+    # Copy our wrapper scripts into that directory and register by filename.
+    cp -f "${SOURCE_DIR}/scripts/tick.sh" "${HERMES_SCRIPTS_DIR}/tick.sh"
+    cp -f "${SOURCE_DIR}/scripts/audit.sh" "${HERMES_SCRIPTS_DIR}/audit.sh"
+    cp -f "${SOURCE_DIR}/scripts/daily.sh" "${HERMES_SCRIPTS_DIR}/daily.sh"
+
     register_cron_job() {
       local name="$1"
       local schedule="$2"
@@ -154,9 +164,9 @@ if command -v hermes >/dev/null 2>&1; then
       }
     }
 
-    register_cron_job "secmon-tick" "*/15 * * * *" "${SOURCE_DIR}/scripts/tick.sh"
-    register_cron_job "secmon-audit" "0 */6 * * *" "${SOURCE_DIR}/scripts/audit.sh"
-    register_cron_job "secmon-daily" "0 8 * * *" "${SOURCE_DIR}/scripts/daily.sh"
+    register_cron_job "secmon-tick" "*/15 * * * *" "tick.sh"
+    register_cron_job "secmon-audit" "0 */6 * * *" "audit.sh"
+    register_cron_job "secmon-daily" "0 8 * * *" "daily.sh"
   fi
 else
   echo "==> Hermes CLI not found — skipping plugin enable and cron registration"
