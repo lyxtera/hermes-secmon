@@ -52,6 +52,10 @@ if command -v hermes >/dev/null 2>&1; then
   done
   echo "==> Disabling Hermes plugin"
   hermes plugins disable secmon 2>/dev/null || true
+
+  # Remove Hermes wrapper scripts we installed (if present).
+  HERMES_SCRIPTS_DIR="${HOME}/.hermes/scripts/secmon"
+  rm -rf "${HERMES_SCRIPTS_DIR}" 2>/dev/null || true
 else
   echo "==> Hermes CLI not found — skip cron/plugin cleanup"
 fi

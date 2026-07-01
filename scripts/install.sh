@@ -36,6 +36,14 @@ EOF
 
 REPO="${REPO_ROOT}"
 
+# If we're already running from a Hermes project plugin directory, reuse it.
+# This avoids creating unnecessary symlinks like /opt/secmon -> <repo>.
+if [[ "${SOURCE_DIR}" == "/opt/secmon" ]] && [[ -f "${REPO_ROOT}/plugin.yaml" ]] && [[ "${REPO_ROOT}" == *"/.hermes/plugins/"* ]]; then
+  echo "==> Using Hermes plugin directory directly: ${REPO_ROOT}"
+  SOURCE_DIR="${REPO_ROOT}"
+  VENV_DIR="${SOURCE_DIR}/venv"
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --source) SOURCE_DIR="$2"; shift 2 ;;
@@ -74,13 +82,17 @@ chmod 640 "${LOG_FILE}" "${BOTNET_LOG}" 2>/dev/null || true
 
 echo "==> Linking source checkout -> ${SOURCE_DIR}"
 mkdir -p "$(dirname "${SOURCE_DIR}")"
-if [[ -L "${SOURCE_DIR}" ]]; then
-  ln -sfn "${REPO}" "${SOURCE_DIR}"
-elif [[ -e "${SOURCE_DIR}" ]]; then
-  echo "Refusing to overwrite non-symlink ${SOURCE_DIR}" >&2
-  exit 1
+if [[ "${SOURCE_DIR}" != "${REPO_ROOT}" ]]; then
+  if [[ -L "${SOURCE_DIR}" ]]; then
+    ln -sfn "${REPO}" "${SOURCE_DIR}"
+  elif [[ -e "${SOURCE_DIR}" ]]; then
+    echo "Refusing to overwrite non-symlink ${SOURCE_DIR}" >&2
+    exit 1
+  else
+    ln -s "${REPO}" "${SOURCE_DIR}"
+  fi
 else
-  ln -s "${REPO}" "${SOURCE_DIR}"
+  echo "==> Skipping symlink (already using ${SOURCE_DIR})"
 fi
 
 echo "==> Creating Python virtual environment"
@@ -137,36 +149,38 @@ if command -v hermes >/dev/null 2>&1; then
     fi
 
     echo "==> Registering Hermes cron jobs (no-agent mode)"
-    HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-    HERMES_SCRIPTS_DIR="${HERMES_HOME}/scripts"
-    mkdir -p "${HERMES_SCRIPTS_DIR}"
 
-    # Hermes Cron requires --script to be relative to ~/.hermes/scripts/.
-    # Copy our wrapper scripts into that directory and register by filename.
-    cp -f "${SOURCE_DIR}/scripts/tick.sh" "${HERMES_SCRIPTS_DIR}/tick.sh"
-    cp -f "${SOURCE_DIR}/scripts/audit.sh" "${HERMES_SCRIPTS_DIR}/audit.sh"
-    cp -f "${SOURCE_DIR}/scripts/daily.sh" "${HERMES_SCRIPTS_DIR}/daily.sh"
+    # Hermes cron requires --script to be relative to ~/.hermes/scripts/.
+    # Copy wrappers there so we can register using relative paths.
+    HERMES_SCRIPTS_DIR="${HOME}/.hermes/scripts/secmon"
+    mkdir -p "${HERMES_SCRIPTS_DIR}"
+    cp "${SOURCE_DIR}/scripts/tick.sh" "${HERMES_SCRIPTS_DIR}/tick.sh"
+    cp "${SOURCE_DIR}/scripts/audit.sh" "${HERMES_SCRIPTS_DIR}/audit.sh"
+    cp "${SOURCE_DIR}/scripts/daily.sh" "${HERMES_SCRIPTS_DIR}/daily.sh"
+    chmod +x "${HERMES_SCRIPTS_DIR}/tick.sh" \
+      "${HERMES_SCRIPTS_DIR}/audit.sh" \
+      "${HERMES_SCRIPTS_DIR}/daily.sh"
 
     register_cron_job() {
       local name="$1"
       local schedule="$2"
-      local script="$3"
+      local script_rel="$3"
       if hermes cron list 2>/dev/null | grep -q "${name}"; then
         echo "    ${name}: already registered"
         return 0
       fi
       hermes cron add "${schedule}" \
         --no-agent \
-        --script "${script}" \
+        --script "${script_rel}" \
         --name "${name}" \
         "${DELIVER_ARGS[@]}" 2>/dev/null || {
         echo "    Warning: failed to register ${name} (configure hermes.deliver_target?)" >&2
       }
     }
 
-    register_cron_job "secmon-tick" "*/15 * * * *" "tick.sh"
-    register_cron_job "secmon-audit" "0 */6 * * *" "audit.sh"
-    register_cron_job "secmon-daily" "0 8 * * *" "daily.sh"
+    register_cron_job "secmon-tick" "*/15 * * * *" "secmon/tick.sh"
+    register_cron_job "secmon-audit" "0 */6 * * *" "secmon/audit.sh"
+    register_cron_job "secmon-daily" "0 8 * * *" "secmon/daily.sh"
   fi
 else
   echo "==> Hermes CLI not found — skipping plugin enable and cron registration"

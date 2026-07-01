@@ -3,12 +3,18 @@
 # Prints findings to stdout; empty output = silent tick (no gateway delivery).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PLUGIN_DIR="${SECMON_PLUGIN_DIR:-${HOME}/.hermes/plugins/secmon}"
 
-CLI="${SECMON_CLI:-/usr/local/bin/secmon}"
-if [[ ! -x "${CLI}" ]] && [[ -x "${REPO_ROOT}/venv/bin/secmon" ]]; then
-  CLI="${REPO_ROOT}/venv/bin/secmon"
+# Prefer a CLI from the plugin dir venv when available; otherwise fall back to /usr/local/bin.
+CLI="${SECMON_CLI:-}"
+if [[ -z "${CLI}" ]]; then
+  if [[ -x "${PLUGIN_DIR}/venv/bin/secmon" ]]; then
+    CLI="${PLUGIN_DIR}/venv/bin/secmon"
+  elif [[ -x "${SECMON_SOURCE:-/opt/secmon}/venv/bin/secmon" ]]; then
+    CLI="${SECMON_SOURCE:-/opt/secmon}/venv/bin/secmon"
+  else
+    CLI="/usr/local/bin/secmon"
+  fi
 fi
 
 CONFIG="${SECMON_CONFIG_PATH:-/etc/secmon/config.yaml}"
