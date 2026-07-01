@@ -23,4 +23,11 @@ if [[ -f "${CONFIG}" ]]; then
   ARGS+=(--config "${CONFIG}")
 fi
 
-exec "${CLI}" "${ARGS[@]}"
+# Hermes cron considers non-zero exit codes as job failures.
+# secmon returns `1` when it emits new alerts; for cron delivery we still
+# want Hermes to treat that as a successful run, so always exit 0.
+set +e
+"${CLI}" "${ARGS[@]}"
+_rc=$?
+set -e
+exit 0

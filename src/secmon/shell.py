@@ -36,10 +36,11 @@ def run_cmd(
             shell=False,
         )
     except FileNotFoundError:
-        logger.error("command not found: %s", args[0])
+        # Many integrations are optional; missing binaries should not spam cron stderr.
+        logger.debug("command not found: %s", args[0])
         raise
     except subprocess.TimeoutExpired:
-        logger.error("command timed out: %s", " ".join(args))
+        logger.debug("command timed out: %s", " ".join(args))
         raise
 
 
