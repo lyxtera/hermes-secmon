@@ -111,6 +111,7 @@ def _persistence_severity(path: str, content_hint: str = "") -> str:
 
 def _scan_secrets(cfg: dict) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
+    exclude_paths = set(cfg.get("whitelist", {}).get("secret_exclude_paths", []))
     scan_roots = ["/tmp", "/var/tmp", "/dev/shm", "/root"]
     for web in WEB_ROOTS:
         if os.path.isdir(web):
@@ -125,6 +126,8 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                     continue
                 for fname in files:
                     fp = os.path.join(dirpath, fname)
+                    if fp in exclude_paths:
+                        continue
                     if fname in SECRET_FILENAMES or fname.endswith((".pem", ".key", ".env")):
                         try:
                             st = os.stat(fp)
@@ -150,6 +153,8 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                             continue
                     try:
                         if os.path.getsize(fp) > 500_000:
+                            continue
+                        if fp in exclude_paths:
                             continue
                         sample = open(fp, encoding="utf-8", errors="replace").read(8000)
                         for pat in SECRET_PATTERNS:
@@ -259,8 +264,11 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
     # Persistence baseline diff
     current_persist = _collect_persistence_entries()
     persist_baseline: dict = ab.setdefault("persistence", {})
+    exclude_prefixes = tuple(cfg.get("whitelist", {}).get("persist_exclude_prefixes", []))
     if persist_baseline:
         for path, digest in current_persist.items():
+            if exclude_prefixes and path.startswith(exclude_prefixes):
+                continue
             prev = persist_baseline.get(path)
             if prev is None:
                 sev = _persistence_severity(path)

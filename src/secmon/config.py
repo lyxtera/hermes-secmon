@@ -64,6 +64,11 @@ def default_config() -> dict[str, Any]:
                 "127.0.0.0/8",
             ],
             "docker_container_whitelist": [],
+            "hidden_tmp_entries": [],
+            "tmpfs_mounts": [],
+            "secret_exclude_paths": [],
+            "proc_hollow_exclude_pids": [],
+            "persist_exclude_prefixes": [],
         },
         "anomaly": {
             "baseline_min_samples": 4,
@@ -110,6 +115,11 @@ def default_config() -> dict[str, Any]:
             "ssh_tier": 1,
             "skip_root_login_check": False,
             "skip_password_auth_check": False,
+            "skip_fw_policy_check": False,
+            "skip_kernel_modules_check": False,
+        },
+        "sysctl": {
+            "expected_values": {},
         },
     }
 

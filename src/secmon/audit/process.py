@@ -93,6 +93,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                     )
 
     # NC-6: Suspicious mounts
+    whitelisted_tmpfs = set(cfg.get("whitelist", {}).get("tmpfs_mounts", []))
     mounts = run_cmd_safe(["cat", "/proc/mounts"])
     for line in mounts.splitlines():
         parts = line.split()
@@ -102,9 +103,10 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         opts = parts[3] if len(parts) > 3 else ""
         if fstype == "tmpfs" and mnt not in ("/tmp", "/run", "/dev/shm", "/run/lock"):
             if not mnt.startswith("/run/user"):
-                findings.append(
-                    AuditFinding("HIGH", 3, "NC-6-tmpfs", f"Unexpected tmpfs: {mnt}")
-                )
+                if mnt not in whitelisted_tmpfs:
+                    findings.append(
+                        AuditFinding("HIGH", 3, "NC-6-tmpfs", f"Unexpected tmpfs: {mnt}")
+                    )
         if "bind" in opts and mnt in ("/etc/shadow", "/etc/passwd"):
             findings.append(
                 AuditFinding("CRITICAL", 3, "NC-6-bind", f"Dangerous bind mount: {mnt}")
@@ -142,7 +144,10 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         state.setdefault("audit_baseline", {})["bpf_programs"] = current_ids
 
     # Process hollowing / code injection via /proc/*/maps
+    exclude_pids = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_pids", []))
     for pid in list(proc_pids)[:300]:
+        if pid in exclude_pids:
+            continue
         maps_path = f"/proc/{pid}/maps"
         try:
             with open(maps_path, encoding="utf-8", errors="replace") as fh:
@@ -293,8 +298,12 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             )
         sysctl_baseline[key] = val
     if modules_disabled == "0":
+        skip_modules = cfg.get("hardening", {}).get("skip_kernel_modules_check", False)
         lsmod_lines = lsmod.splitlines()[1:] if lsmod else []
-        if len(lsmod_lines) > 5:
+        if skip_modules:
+            # Still track changes but don't alert on enabled state alone
+            pass
+        elif len(lsmod_lines) > 5:
             findings.append(
                 AuditFinding(
                     "HIGH", 3, "kernel_modules_enabled",

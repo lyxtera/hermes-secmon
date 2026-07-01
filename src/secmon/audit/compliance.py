@@ -34,7 +34,17 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
 
     for key, expected in SYSCTL_EXPECTED.items():
         val = run_cmd_safe(["sysctl", "-n", key]).strip()
-        if val and val != expected:
+        if not val:
+            continue
+        if val != expected:
+            # Check if config allows multiple acceptable values for this key
+            expected_overrides = cfg.get("sysctl", {}).get("expected_values", {})
+            if key in expected_overrides:
+                acceptable = expected_overrides[key]
+                if isinstance(acceptable, list) and val in acceptable:
+                    continue
+                if val == acceptable:
+                    continue
             findings.append(
                 AuditFinding("MEDIUM", 7, "sysctl", f"{key}={val} (expected {expected})")
             )

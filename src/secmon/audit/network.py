@@ -37,11 +37,13 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
     known_ports.update({str(k): v for k, v in current_ports.items()})
 
     # Firewall status
+    skip_fw_policy = cfg.get("hardening", {}).get("skip_fw_policy_check", False)
     ipt = run_cmd_safe(["iptables", "-L", "INPUT", "-n"])
     if "Chain INPUT" in ipt and "policy DROP" not in ipt:
-        findings.append(
-            AuditFinding("MEDIUM", 2, "fw_policy", "INPUT chain default policy is not DROP")
-        )
+        if not skip_fw_policy:
+            findings.append(
+                AuditFinding("MEDIUM", 2, "fw_policy", "INPUT chain default policy is not DROP")
+            )
     for chain in ("SCANS", "BOTNET", "PORT_SCAN", "ANTI_SCAN", "BAD_FLAGS"):
         if chain not in run_cmd_safe(["iptables", "-L", "-n"]):
             findings.append(

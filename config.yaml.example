@@ -24,6 +24,32 @@ whitelist:
     - "192.168.0.0/16"
     - "127.0.0.0/8"
 
+  # Hidden tmp entries to ignore (e.g. X11 Unix sockets from VNC)
+  hidden_tmp_entries:
+    - ".font-unix"
+    - ".XIM-unix"
+    - ".ICE-unix"
+    - ".X11-unix"
+
+  # Unexpected tmpfs mounts that are actually expected (e.g. systemd /var/tmp)
+  tmpfs_mounts:
+    - "/var/tmp"
+
+  # File paths to skip in secret-pattern scanning (operational config files)
+  secret_exclude_paths:
+    - "/root/.hermes/config.yaml"
+    - "/root/.hermes/.env"
+    - "/root/.hermes/skills/stitch-design/README.md"
+
+  # PIDs to exclude from process hollowing / anonymous mapping checks
+  proc_hollow_exclude_pids:
+    - 449    # unattended-upgrades-shutdown (Python allocator)
+
+  # Persistence entry prefixes to ignore (secmon/hermes own systemd units)
+  persist_exclude_prefixes:
+    - "/etc/systemd/system/secmon-"
+    - "/etc/systemd/system/hermes-"
+
 anomaly:
   baseline_min_samples: 4
   max_baseline_days: 30
@@ -54,8 +80,22 @@ suspicious_ports:
 
 dns:
   expected_nameservers:
-    - "8.8.8.8"
-    - "8.8.4.4"
+    - "1.1.1.1"
+    - "2001:4860:4860::8844"
+    - "2001:4860:4860::8888"
+
+hardening:
+  # 1 = minimal, 2 = moderate, 3 = strict
+  ssh_tier: 1
+  skip_root_login_check: True     # Allow root SSH login
+  skip_password_auth_check: False
+  skip_fw_policy_check: True      # Don't flag INPUT not DROP (remote server lockout risk)
+  skip_kernel_modules_check: True # Don't flag kernel modules enabled (can't set at runtime)
+
+# Override expected sysctl values (accept multiple valid values)
+sysctl:
+  expected_values:
+    kernel.kptr_restrict: ["1", "2"]   # 2 is actually stricter than 1
 
 metrics:
   overrides: {}

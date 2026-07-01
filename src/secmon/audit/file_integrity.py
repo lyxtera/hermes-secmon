@@ -94,6 +94,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                 )
 
     # Hidden files in tmp areas
+    hidden_whitelist = set(cfg.get("whitelist", {}).get("hidden_tmp_entries", []))
     for tmp_dir in ("/tmp", "/var/tmp", "/dev/shm"):
         if not os.path.isdir(tmp_dir):
             continue
@@ -103,6 +104,8 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             continue
         for entry in entries:
             if entry.startswith(".") and "systemd-private" not in entry and "X11" not in entry:
+                if entry in hidden_whitelist:
+                    continue
                 findings.append(
                     AuditFinding("MEDIUM", 1, "hidden_tmp", f"Hidden entry in {tmp_dir}: {entry}")
                 )
