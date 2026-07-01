@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import json
 from contextlib import redirect_stdout
 from typing import Any, Callable
@@ -131,4 +132,74 @@ TOOL_DEFINITIONS: list[tuple[str, dict, Callable[[dict, Any], str], str]] = [
         _make_handler("detect-botnet"),
         "Run botnet /24 subnet analysis and automatic iptables blocking.",
     ),
+    (
+        "secmon_remediate",
+        SCHEMAS["secmon_remediate"],
+        lambda params, **kwargs: json.dumps(_remediate(params, params.get("config_path"))),
+        "Apply safe operator-guided remediation actions.",
+    ),
 ]
+
+
+def _remediate(params: dict, config_path: str | None) -> dict[str, Any]:
+    """Run a safe remediation action (best-effort)."""
+    action = (params.get("action") or "").strip()
+    if not action:
+        return {"success": False, "action": action, "error": "Missing action"}
+
+    state, cfg = _session(config_path)
+    del state
+
+    if action == "self_protection_fix_permissions":
+        return _fix_self_protection_permissions(cfg)
+
+    return {"success": False, "action": action, "error": f"Unknown action: {action}"}
+
+
+def remediate_action(action: str, config_path: str | None = None) -> dict[str, Any]:
+    """Public helper for slash commands."""
+    return _remediate({"action": action}, config_path)
+
+
+def _fix_self_protection_permissions(cfg: dict) -> dict[str, Any]:
+    """Fix only the known insecure-permissions cases from self_protection alerts."""
+    changed: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    def _chmod(path: str, mode: int) -> None:
+        try:
+            if not os.path.exists(path):
+                return
+            st_before = os.stat(path)
+            os.chmod(path, mode)
+            st_after = os.stat(path)
+            changed.append(
+                {
+                    "path": path,
+                    "mode_before": oct(st_before.st_mode & 0o777),
+                    "mode_after": oct(st_after.st_mode & 0o777),
+                }
+            )
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+
+    install = cfg.get("installation", {})
+    config_path = cfg.get("general", {}).get("config_path") or "/etc/secmon/config.yaml"
+
+    data_dir = cfg.get("general", {}).get("data_dir") or "/var/lib/secmon"
+    log_file = cfg.get("general", {}).get("log_file") or "/var/log/security-monitor.log"
+    botnet_log_file = cfg.get("general", {}).get("botnet_log_file") or "/var/log/secmon-botnet.log"
+
+    # Safe defaults aligned with self_protection enforcement.
+    _chmod(config_path, 0o600)
+    _chmod(os.path.join(data_dir, "state.json"), 0o600)
+    _chmod(data_dir, 0o700)
+    _chmod(log_file, 0o640)
+    _chmod(botnet_log_file, 0o640)
+
+    return {
+        "success": len(errors) == 0,
+        "action": "self_protection_fix_permissions",
+        "changed": changed,
+        "errors": errors,
+    }

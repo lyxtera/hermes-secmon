@@ -89,4 +89,25 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "required": [],
         },
     },
+    "secmon_remediate": {
+        "name": "secmon_remediate",
+        "description": "Apply safe, operator-guided remediation actions for known security monitor self-protection issues.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Remediation action identifier.",
+                    "enum": [
+                        "self_protection_fix_permissions",
+                    ],
+                },
+                "config_path": {
+                    "type": "string",
+                    "description": "Optional path to secmon config YAML.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 }

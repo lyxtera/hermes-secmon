@@ -43,3 +43,19 @@ def register(ctx: Any) -> None:
         secmon_command,
         "Run secmon: /secmon [status|check|audit|record|daily|detect-botnet|tick]",
     )
+
+    def secmon_remediate_command(args: str, **kwargs: Any) -> str:
+        del kwargs
+        parts = (args or "").strip().split()
+        if not parts:
+            return json.dumps({"success": False, "error": "Missing action"} , indent=2)
+        action = parts[0]
+        config_path = parts[1] if len(parts) >= 2 else None
+        result = tools.remediate_action(action, config_path)
+        return json.dumps(result, indent=2)
+
+    ctx.register_command(
+        "secmon_remediate",
+        secmon_remediate_command,
+        "Apply safe remediation: /secmon_remediate self_protection_fix_permissions [config_path]",
+    )
