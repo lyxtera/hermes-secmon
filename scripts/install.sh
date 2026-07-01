@@ -100,7 +100,11 @@ chmod +x "${SOURCE_DIR}/scripts/tick.sh" \
   "${SOURCE_DIR}/scripts/audit.sh" \
   "${SOURCE_DIR}/scripts/daily.sh"
 
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -e "${CONFIG_FILE}" ]]; then
+  # Handle dangling symlink (cp cannot write "through" it).
+  if [[ -L "${CONFIG_FILE}" ]]; then
+    rm -f "${CONFIG_FILE}"
+  fi
   echo "==> Installing example config -> ${CONFIG_FILE}"
   cp "${SOURCE_DIR}/config.yaml.example" "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}"
