@@ -80,7 +80,7 @@ def _check_permissions(path: str, max_mode: int, label: str) -> Alert | None:
                 source="self_protection",
                 message=f"Secmon {label} permissions too open: {path} ({oct(mode)})",
                 dedup_key=f"self_prot:perm:{path}",
-                structured={"path": path, "mode": oct(mode)},
+                structured={"path": path, "mode": oct(mode), "expected": oct(max_mode)},
             )
     except OSError:
         pass

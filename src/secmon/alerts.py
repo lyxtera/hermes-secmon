@@ -108,10 +108,43 @@ def audit_finding_to_alert(finding: Any) -> Alert:
 
 
 def _stdout_remediation_hint(alert: Alert) -> str:
-    """Short per-alert hint for gateway/cron delivery."""
-    if alert.severity == "CRITICAL":
-        return " → reply /secmon audit (URGENT)"
-    return " → reply /secmon audit"
+    """Short per-alert action hint for gateway/cron delivery."""
+    source = alert.source
+    msg = alert.message.lower()
+    # Self-protection: show exact fix
+    if source == "self_protection":
+        if "permissions" in msg:
+            expected = alert.structured.get("expected", "600")
+            return f" → fix: chmod {expected} <path>"
+        if "code file changed" in msg:
+            return " → fix: git pull && sudo ./scripts/install.sh"
+        if "scheduler missing" in msg:
+            return " → fix: hermes cron add ... (see jobs.yaml)"
+        if "symlink" in msg:
+            return " → fix: restore symlink to trusted checkout"
+        if "delivery target" in msg:
+            return " → fix: check /etc/secmon/config.yaml"
+        return " → fix: investigate immediately"
+    # Brute-force / SSH
+    if source in ("brute_force", "ssh_session") or "ssh" in source:
+        return " → check fail2ban: fail2ban-client status sshd"
+    # fail2ban
+    if source == "fail2ban":
+        return " → check: fail2ban-client status"
+    # Outbound / C2
+    if "outbound" in source or "c2" in source:
+        return " → investigate: ss -tlnp | grep ESTAB"
+    # Audit findings
+    if source.startswith("audit:"):
+        return " → investigate: secmon --audit"
+    # Botnet
+    if source == "botnet":
+        return " → verify: iptables -L BOTNET -n"
+    # Anomaly
+    if source == "anomaly":
+        return " → check: secmon --check"
+    # Generic fallback
+    return " → action: secmon --status"
 
 
 def findings_to_alerts(

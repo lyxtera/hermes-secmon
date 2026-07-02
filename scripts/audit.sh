@@ -40,10 +40,17 @@ echo "=== secmon audit — $(_timestamp_utc) ==="
 echo
 echo "${OUT}"
 echo
-echo "--- What to do next ---"
-echo "1) Review CRITICAL/HIGH findings in the JSON above."
-echo "2) Ask Hermes to summarize, prioritize, and propose remediation steps."
+echo "── Summary ──"
+echo "  Findings:    $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('finding_count','?'))" 2>/dev/null || echo "see above")"
+echo "  Score:       $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_score','?'))" 2>/dev/null || echo "see above")"
+echo "  CRITICAL:    $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('critical_count','?'))" 2>/dev/null || echo "see above")"
+echo "  HIGH:        $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('high_count','?'))" 2>/dev/null || echo "see above")"
 echo
-echo "CTA: /secmon audit"
+echo "── Next steps ──"
+echo "  Review layers with CRITICAL/HIGH findings."
+echo "  Fix: refer to each check_id's message for the exact remediation."
+echo "  Verify: secmon --audit after applying fixes."
+echo
+echo "▶ secmon --audit"
 
 exit 0

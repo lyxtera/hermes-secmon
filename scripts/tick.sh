@@ -29,81 +29,82 @@ _timestamp_utc() {
 
 _emit_tick_remediation() {
   local out="$1"
-  local cta="/secmon audit"
+  local cta=""
 
   echo
-  echo "--- What to do next ---"
+  echo "── What to do ──"
 
-  if [[ "${out}" == *"self_protection: Secmon state permissions too open"* ]] \
-    || [[ "${out}" == *"self_protection: Secmon config permissions too open"* ]] \
-    || [[ "${out}" == *"self_protection: Secmon log permissions too open"* ]] \
-    || [[ "${out}" == *"self_protection: Secmon data_dir permissions too open"* ]]; then
-    echo "1) Lock down secmon file permissions (safe automated fix)."
-    echo "2) Verify with /secmon status and hermes cron list."
-    cta="/secmon_remediate self_protection_fix_permissions"
+  if [[ "${out}" == *"self_protection:"*"permissions too open"* ]]; then
+    local path=""
+    # Extract the path from the alert line (e.g. "Secmon state permissions too open: /path/to/file (0o644)")
+    path="$(echo "${out}" | sed -n 's/.*permissions too open: \([^ ]*\) .*/\1/p' | head -1)"
+    echo "  Fix permissions:  chmod 600 ${path:-<path>}"
+    echo "  Then verify:      secmon --status"
+    cta="chmod 600 ${path:-<path>}"
   elif [[ "${out}" == *"self_protection: Secmon code file changed"* ]]; then
-    echo "1) Re-deploy secmon from a trusted release/commit."
-    echo "2) Confirm plugin checkout path is expected (~/.hermes/plugins/secmon)."
-    echo "3) Restart Hermes gateway, then run /secmon status."
-    cta="audit + remediate"
+    echo "  Redeploy:         cd $(dirname ${SECMON_SOURCE:-/opt/secmon}) && git pull"
+    echo "  Reinstall:        sudo ./scripts/install.sh"
+    echo "  Verify:           secmon --status"
+    cta="git pull && sudo ./scripts/install.sh"
   elif [[ "${out}" == *"self_protection: Secmon scheduler missing"* ]]; then
-    echo "1) Re-register Hermes cron jobs (see cron/jobs.yaml)."
-    echo "2) Ensure hermes gateway is running: hermes gateway start."
-    echo "3) Verify with: hermes cron list"
-    cta="/secmon status"
+    echo "  Register jobs:    hermes cron add ... $(grep -r 'secmon-' /opt/secmon/cron/ 2>/dev/null)"
+    echo "  Verify:           hermes cron list"
+    cta="hermes cron list"
   elif [[ "${out}" == *"self_protection: Secmon install symlink retargeted"* ]] \
     || [[ "${out}" == *"self_protection: Secmon CLI symlink retargeted"* ]]; then
-    echo "1) Investigate unexpected symlink changes immediately."
-    echo "2) Re-point install to trusted checkout and redeploy."
-    echo "3) Run /secmon audit for persistence-layer findings."
-    cta="/secmon audit"
+    echo "  Investigate:      ls -la /opt/secmon /usr/local/bin/secmon"
+    echo "  Restore:          ln -sf /path/to/trusted/checkout /opt/secmon"
+    echo "  Then run audit:   secmon --audit"
+    cta="secmon --audit"
   elif [[ "${out}" == *"self_protection: Secmon Hermes delivery target changed"* ]]; then
-    echo "1) Verify /etc/secmon/config.yaml hermes.deliver_target is intentional."
-    echo "2) Confirm no unauthorized config edits."
-    echo "3) Run /secmon status."
-    cta="/secmon status"
+    echo "  Inspect:          cat /etc/secmon/config.yaml | grep deliver_target"
+    echo "  Reconfigure if unauthorized, then verify: secmon --status"
+    cta="grep deliver /etc/secmon/config.yaml"
   elif [[ "${out}" == *"self_protection:"* ]]; then
-    echo "1) Treat as monitor tamper/integrity issue."
-    echo "2) Run /secmon audit and review self-protection findings."
-    cta="/secmon audit"
+    echo "  Investigate:      secmon --audit"
+    echo "  Check logs:       tail -50 /var/log/security-monitor.log"
+    cta="secmon --audit"
   elif [[ "${out}" == *"brute_force:"* ]]; then
-    echo "1) Confirm attack source subnets in fail2ban/iptables."
-    echo "2) Run botnet blocking for aggressive /24 subnets."
-    cta="/secmon_detect_botnet"
+    echo "  Check fail2ban:   fail2ban-client status sshd"
+    echo "  Review logs:      journalctl -u ssh --since '1 hour ago' | grep 'Failed password'"
+    echo "  Block subnets:    secmon --detect-botnet"
+    cta="fail2ban-client status sshd"
   elif [[ "${out}" == *"fail2ban:"* ]]; then
-    echo "1) Review newly banned IPs and auth logs."
-    echo "2) Run /secmon check, then escalate with botnet analysis if needed."
-    cta="/secmon_detect_botnet"
+    echo "  List banned:      fail2ban-client status sshd"
+    echo "  Review auth:      journalctl -u ssh --since '1 hour ago' | tail -30"
+    cta="fail2ban-client status sshd"
   elif [[ "${out}" == *"outbound:"* ]] || [[ "${out}" == *"c2:"* ]]; then
-    echo "1) Investigate the process owning suspicious outbound connections."
-    echo "2) Consider isolating the host/network path until triaged."
-    echo "3) Run a full forensic audit."
-    cta="/secmon audit"
+    echo "  Investigate:      ss -tlnp | grep ESTAB"
+    echo "  Trace:            lsof -i -n | head -20"
+    echo "  Full audit:       secmon --audit"
+    cta="ss -tlnp | grep ESTAB"
   elif [[ "${out}" == *"anomaly:"* ]]; then
-    echo "1) Re-check current metrics vs baseline."
-    echo "2) Run /secmon check, then /secmon audit for root cause."
-    cta="/secmon audit"
+    echo "  Check metrics:    secmon --check"
+    echo "  Full audit:       secmon --audit"
+    cta="secmon --check"
   elif [[ "${out}" == *"ssh:"* ]] || [[ "${out}" == *"ssh_session:"* ]]; then
-    echo "1) Investigate unauthorized SSH session immediately."
-    echo "2) Verify allowed IPs and active sessions."
-    echo "3) Run full audit for persistence indicators."
-    cta="/secmon audit"
+    echo "  Active sessions:  ss -tnp | grep ':22 '"
+    echo "  Review:           last | head -20"
+    echo "  Full audit:       secmon --audit"
+    cta="ss -tnp | grep ':22 '"
   elif [[ "${out}" == *"botnet:"* ]]; then
-    echo "1) Review newly blocked /24 subnets."
-    echo "2) Confirm iptables BOTNET chain and whitelist settings."
-    cta="/secmon status"
+    echo "  Blocked subnets:  iptables -L BOTNET -n --line-numbers"
+    echo "  Logs:             tail -20 /var/log/secmon-botnet.log"
+    cta="iptables -L BOTNET -n"
   elif [[ "${out}" == *"audit:"* ]]; then
-    echo "1) Review CRITICAL/HIGH audit findings in detail."
-    echo "2) Ask Hermes to summarize and prioritize remediation."
-    cta="/secmon audit"
+    echo "  Review full audit:  secmon --audit"
+    echo "  Check trends:       grep trend /var/log/security-monitor.log | tail -5"
+    cta="secmon --audit"
   else
-    echo "1) Review alert details above."
-    echo "2) Run a full forensic audit if impact is unclear."
-    cta="/secmon audit"
+    echo "  Review alert:       cat /var/log/security-monitor.log | tail -10"
+    echo "  Full audit:         secmon --audit"
+    cta="secmon --audit"
   fi
 
-  echo
-  echo "CTA: ${cta}"
+  if [[ -n "${cta}" ]]; then
+    echo
+    echo "▶ ${cta}"
+  fi
 }
 
 # Hermes cron considers non-zero exit codes as job failures.
