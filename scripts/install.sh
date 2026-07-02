@@ -151,12 +151,12 @@ if command -v hermes >/dev/null 2>&1; then
     echo "==> Registering Hermes cron jobs (no-agent mode)"
 
     # Hermes cron requires --script to be relative to ~/.hermes/scripts/.
-    # Copy wrappers there so we can register using relative paths.
+    # Symlink wrappers there so updates propagate automatically.
     HERMES_SCRIPTS_DIR="${HOME}/.hermes/scripts/secmon"
     mkdir -p "${HERMES_SCRIPTS_DIR}"
-    cp "${SOURCE_DIR}/scripts/tick.sh" "${HERMES_SCRIPTS_DIR}/tick.sh"
-    cp "${SOURCE_DIR}/scripts/audit.sh" "${HERMES_SCRIPTS_DIR}/audit.sh"
-    cp "${SOURCE_DIR}/scripts/daily.sh" "${HERMES_SCRIPTS_DIR}/daily.sh"
+    ln -sf "${SOURCE_DIR}/scripts/tick.sh" "${HERMES_SCRIPTS_DIR}/tick.sh"
+    ln -sf "${SOURCE_DIR}/scripts/audit.sh" "${HERMES_SCRIPTS_DIR}/audit.sh"
+    ln -sf "${SOURCE_DIR}/scripts/daily.sh" "${HERMES_SCRIPTS_DIR}/daily.sh"
     chmod +x "${HERMES_SCRIPTS_DIR}/tick.sh" \
       "${HERMES_SCRIPTS_DIR}/audit.sh" \
       "${HERMES_SCRIPTS_DIR}/daily.sh"

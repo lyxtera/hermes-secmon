@@ -115,36 +115,39 @@ def _stdout_remediation_hint(alert: Alert) -> str:
     if source == "self_protection":
         if "permissions" in msg:
             expected = alert.structured.get("expected", "600")
-            return f" → \`chmod {expected} <path>\`"
+            # Normalize: strip Python '0o' octal prefix if present
+            if expected.startswith("0o"):
+                expected = expected[2:]
+            return f" → `chmod {expected} <path>`"
         if "code file changed" in msg:
-            return " → \`git pull && sudo ./scripts/install.sh\`"
+            return " → `git pull && sudo ./scripts/install.sh`"
         if "scheduler missing" in msg:
-            return " → \`hermes cron list\`"
+            return " → `hermes cron list`"
         if "symlink" in msg:
-            return " → \`ln -sf /path/to/trusted/checkout /opt/secmon\`"
+            return " → `ln -sf /path/to/trusted/checkout /opt/secmon`"
         if "delivery target" in msg:
-            return " → \`grep deliver /etc/secmon/config.yaml\`"
+            return " → `grep deliver /etc/secmon/config.yaml`"
         return " → fix: investigate immediately"
     # Brute-force / SSH
     if source in ("brute_force", "ssh_session") or "ssh" in source:
-        return " → \`fail2ban-client status sshd\`"
+        return " → `fail2ban-client status sshd`"
     # fail2ban
     if source == "fail2ban":
-        return " → \`fail2ban-client status\`"
+        return " → `fail2ban-client status`"
     # Outbound / C2
     if "outbound" in source or "c2" in source:
-        return " → \`ss -tlnp | grep ESTAB\`"
+        return " → `ss -tlnp | grep ESTAB`"
     # Audit findings
     if source.startswith("audit:"):
-        return " → \`secmon --audit\`"
+        return " → `secmon --audit`"
     # Botnet
     if source == "botnet":
-        return " → \`iptables -L BOTNET -n\`"
+        return " → `iptables -L BOTNET -n`"
     # Anomaly
     if source == "anomaly":
-        return " → \`secmon --check\`"
+        return " → `secmon --check`"
     # Generic fallback
-    return " → \`secmon --status\`"
+    return " → `secmon --status`"
 
 
 def findings_to_alerts(

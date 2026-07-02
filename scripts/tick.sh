@@ -33,28 +33,27 @@ _emit_tick_remediation() {
   echo "### 🛠️ What to do"
   echo ""
 
-  if [[ "${out}" == *"self_protection:"*"permissions too open"* ]]; then
+  if [[ "${out}" == *"permissions too open"* ]]; then
     local path=""
     path="$(echo "${out}" | sed -n 's/.*permissions too open: \([^ ]*\) .*/\1/p' | head -1)"
     echo "- \`chmod 600 ${path:-<path>}\` — Fix permissions"
     echo "- \`secmon --status\` — Verify"
     cta="chmod 600 ${path:-<path>}"
-  elif [[ "${out}" == *"self_protection: Secmon code file changed"* ]]; then
+  elif [[ "${out}" == *"Secmon code file changed"* ]]; then
     echo "- \`cd $(dirname ${SECMON_SOURCE:-/opt/secmon}) && git pull\` — Pull latest code"
     echo "- \`sudo ./scripts/install.sh\` — Reinstall"
     echo "- \`secmon --status\` — Verify"
     cta="git pull && sudo ./scripts/install.sh"
-  elif [[ "${out}" == *"self_protection: Secmon scheduler missing"* ]]; then
+  elif [[ "${out}" == *"Secmon scheduler missing"* ]]; then
     echo "- Register Hermes cron jobs from \`cron/jobs.yaml\`"
     echo "- \`hermes cron list\` — Verify"
     cta="hermes cron list"
-  elif [[ "${out}" == *"self_protection: Secmon install symlink retargeted"* ]] \
-    || [[ "${out}" == *"self_protection: Secmon CLI symlink retargeted"* ]]; then
+  elif [[ "${out}" == *"symlink retargeted"* ]]; then
     echo "- \`ls -la /opt/secmon /usr/local/bin/secmon\` — Investigate"
     echo "- \`ln -sf /path/to/trusted/checkout /opt/secmon\` — Restore"
     echo "- \`secmon --audit\` — Full audit"
     cta="secmon --audit"
-  elif [[ "${out}" == *"self_protection: Secmon Hermes delivery target changed"* ]]; then
+  elif [[ "${out}" == *"Secmon Hermes delivery target changed"* ]]; then
     echo "- \`grep deliver /etc/secmon/config.yaml\` — Inspect"
     echo "- Reconfigure if unauthorized, then \`secmon --status\`"
     cta="grep deliver /etc/secmon/config.yaml"
