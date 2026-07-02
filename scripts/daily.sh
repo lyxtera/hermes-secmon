@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hermes cron wrapper — daily security digest (08:00 UTC).
-# Always produces human-readable Markdown output for gateway delivery.
+# Produces Markdown output for gateway delivery.
 set -euo pipefail
 
 PLUGIN_DIR="${SECMON_PLUGIN_DIR:-${HOME}/.hermes/plugins/secmon}"
@@ -36,15 +36,6 @@ fi
 echo "## 📅 Secmon Daily Digest"
 echo "*$(_timestamp_utc)*"
 echo ""
-echo '```'
 echo "${OUT}"
-echo '```'
-echo ""
-echo "### 📋 Next steps"
-echo ""
-echo "- Compare metrics and anomalies against baselines"
-echo "- If anything looks unexpected, run a full forensic audit"
-echo ""
-echo "▶ \`secmon --audit\`"
 
 exit 0
