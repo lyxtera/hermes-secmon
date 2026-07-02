@@ -149,11 +149,13 @@ def save_state(cfg: dict, data: dict, path: str | None = None) -> bool:
     data["version"] = CURRENT_VERSION
     try:
         _atomic_write(spath, json.dumps(data, indent=2, sort_keys=True))
+        os.chmod(spath, 0o600)  # enforce secure permissions despite umask
         sdir = snapshot_dir(cfg)
         os.makedirs(sdir, exist_ok=True)
         today = utcnow().strftime("%Y-%m-%d")
         snap = os.path.join(sdir, f"state.{today}.json")
         _atomic_write(snap, json.dumps(data, indent=2, sort_keys=True))
+        os.chmod(snap, 0o600)
         keep = cfg["general"].get("snapshot_retention_days", 7)
         _prune_snapshots(sdir, keep)
         return True
