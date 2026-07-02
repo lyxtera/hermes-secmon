@@ -115,36 +115,36 @@ def _stdout_remediation_hint(alert: Alert) -> str:
     if source == "self_protection":
         if "permissions" in msg:
             expected = alert.structured.get("expected", "600")
-            return f" → fix: chmod {expected} <path>"
+            return f" → \`chmod {expected} <path>\`"
         if "code file changed" in msg:
-            return " → fix: git pull && sudo ./scripts/install.sh"
+            return " → \`git pull && sudo ./scripts/install.sh\`"
         if "scheduler missing" in msg:
-            return " → fix: hermes cron add ... (see jobs.yaml)"
+            return " → \`hermes cron list\`"
         if "symlink" in msg:
-            return " → fix: restore symlink to trusted checkout"
+            return " → \`ln -sf /path/to/trusted/checkout /opt/secmon\`"
         if "delivery target" in msg:
-            return " → fix: check /etc/secmon/config.yaml"
+            return " → \`grep deliver /etc/secmon/config.yaml\`"
         return " → fix: investigate immediately"
     # Brute-force / SSH
     if source in ("brute_force", "ssh_session") or "ssh" in source:
-        return " → check fail2ban: fail2ban-client status sshd"
+        return " → \`fail2ban-client status sshd\`"
     # fail2ban
     if source == "fail2ban":
-        return " → check: fail2ban-client status"
+        return " → \`fail2ban-client status\`"
     # Outbound / C2
     if "outbound" in source or "c2" in source:
-        return " → investigate: ss -tlnp | grep ESTAB"
+        return " → \`ss -tlnp | grep ESTAB\`"
     # Audit findings
     if source.startswith("audit:"):
-        return " → investigate: secmon --audit"
+        return " → \`secmon --audit\`"
     # Botnet
     if source == "botnet":
-        return " → verify: iptables -L BOTNET -n"
+        return " → \`iptables -L BOTNET -n\`"
     # Anomaly
     if source == "anomaly":
-        return " → check: secmon --check"
+        return " → \`secmon --check\`"
     # Generic fallback
-    return " → action: secmon --status"
+    return " → \`secmon --status\`"
 
 
 def findings_to_alerts(
@@ -185,7 +185,7 @@ def dispatch(
     if stdout and new_alerts:
         for a in new_alerts:
             print(
-                f"[{a.severity}] {a.source}: {sanitize_message(a.message)}"
+                f"**{a.severity}** `{a.source}`: {sanitize_message(a.message)}"
                 f"{_stdout_remediation_hint(a)}"
             )
     return new_alerts

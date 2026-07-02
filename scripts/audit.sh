@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # Hermes cron wrapper — deep forensic audit (every 6 hours).
-# Prints JSON audit report to stdout for gateway delivery.
+# Prints JSON audit report in Markdown to stdout for gateway delivery.
 set -euo pipefail
 
 PLUGIN_DIR="${SECMON_PLUGIN_DIR:-${HOME}/.hermes/plugins/secmon}"
 
-# Prefer a CLI from the plugin dir venv when available; otherwise fall back to /usr/local/bin.
 CLI="${SECMON_CLI:-}"
-if [[ -z "${CLI}" ]]; then
-  if [[ -x "${PLUGIN_DIR}/venv/bin/secmon" ]]; then
-    CLI="${PLUGIN_DIR}/venv/bin/secmon"
-  elif [[ -x "${SECMON_SOURCE:-/opt/secmon}/venv/bin/secmon" ]]; then
-    CLI="${SECMON_SOURCE:-/opt/secmon}/venv/bin/secmon"
-  else
-    CLI="/usr/local/bin/secmon"
-  fi
+if [[ -x "${PLUGIN_DIR}/venv/bin/secmon" ]]; then
+  CLI="${PLUGIN_DIR}/venv/bin/secmon"
+elif [[ -x "${SECMON_SOURCE:-/opt/secmon}/venv/bin/secmon" ]]; then
+  CLI="${SECMON_SOURCE:-/opt/secmon}/venv/bin/secmon"
+else
+  CLI="/usr/local/bin/secmon"
 fi
 
 CONFIG="${SECMON_CONFIG_PATH:-/etc/secmon/config.yaml}"
@@ -36,21 +33,33 @@ if [[ -z "${OUT}" ]]; then
   exit 0
 fi
 
-echo "=== secmon audit — $(_timestamp_utc) ==="
-echo
+echo "## 🔍 Secmon Audit"
+echo "*$(_timestamp_utc)*"
+echo ""
+echo '```json'
 echo "${OUT}"
-echo
-echo "── Summary ──"
-echo "  Findings:    $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('finding_count','?'))" 2>/dev/null || echo "see above")"
-echo "  Score:       $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_score','?'))" 2>/dev/null || echo "see above")"
-echo "  CRITICAL:    $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('critical_count','?'))" 2>/dev/null || echo "see above")"
-echo "  HIGH:        $(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('high_count','?'))" 2>/dev/null || echo "see above")"
-echo
-echo "── Next steps ──"
-echo "  Review layers with CRITICAL/HIGH findings."
-echo "  Fix: refer to each check_id's message for the exact remediation."
-echo "  Verify: secmon --audit after applying fixes."
-echo
-echo "▶ secmon --audit"
+echo '```'
+echo ""
+echo "### 📊 Summary"
+
+findings=$(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('finding_count','?'))" 2>/dev/null || echo "?")
+score=$(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_score','?'))" 2>/dev/null || echo "?")
+critical=$(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('critical_count','?'))" 2>/dev/null || echo "?")
+high=$(echo "${OUT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('high_count','?'))" 2>/dev/null || echo "?")
+
+echo "| Metric | Value |"
+echo "|--------|-------|"
+echo "| **Score** | ${score} |"
+echo "| **Findings** | ${findings} |"
+echo "| **🔴 CRITICAL** | ${critical} |"
+echo "| **🟠 HIGH** | ${high} |"
+echo ""
+echo "### 📋 Next steps"
+echo ""
+echo "- Review layers with **CRITICAL** or **HIGH** findings"
+echo "- Each \`check_id\` above includes a message with the exact issue"
+echo "- Run \`secmon --audit\` again after applying fixes to verify"
+echo ""
+echo "▶ \`secmon --audit\`"
 
 exit 0

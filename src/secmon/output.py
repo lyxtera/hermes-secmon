@@ -71,7 +71,7 @@ def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: in
     lines.append(f"Findings in last period: {findings_count}")
     lines.append("")
     lines.append(
-        "CTA: /secmon audit — trigger a full forensic audit if findings above are unexpected."
+        "▶ \`secmon --audit\` — trigger a full forensic audit if findings above are unexpected."
     )
     return "\n".join(lines)
 
