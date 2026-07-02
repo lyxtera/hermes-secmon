@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from secmon.alerts import Alert
 from secmon.botnet import get_blocked_subnets
 from secmon.shell import run_cmd_safe
-from secmon.utils import subnet_24
+from secmon.utils import subnet_24, utcnow
+
+logger = logging.getLogger("secmon.checks.fail2ban")
 
 
 def check(state: dict, cfg: dict) -> list[Alert]:
@@ -38,25 +41,35 @@ def check(state: dict, cfg: dict) -> list[Alert]:
             noise.append(ip)
         else:
             novel.append(ip)
-    for ip in novel:
+
+    # Only alert on batches of new bans exceeding the threshold.
+    # Individual bans are routine — anomaly detection on f2b_banned_count
+    # catches statistical surges. The threshold prevents per-IP noise.
+    min_new = cfg.get("realtime", {}).get("fail2ban_min_new_bans", 5)
+    total_new = len(novel) + len(noise)
+
+    if total_new >= min_new:
         alerts.append(
             Alert(
-                severity="HIGH",
+                severity="HIGH" if len(novel) > 0 else "INFO",
                 source="fail2ban",
-                message=f"New SSH ban: {ip}",
-                dedup_key=f"f2b:{ip}",
-                structured={"new_bans": [ip], "ip": ip},
+                message=f"SSH ban burst: {total_new} new bans"
+                + (f" ({', '.join(novel[:5])})" if novel else ""),
+                dedup_key=f"f2b:burst:{utcnow().strftime('%Y%m%d%H')}",
+                structured={
+                    "new_bans": len(novel),
+                    "noise_bans": len(noise),
+                    "novel_ips": novel[:10],
+                    "total_banned": len(banned),
+                },
             )
         )
-    if noise:
-        alerts.append(
-            Alert(
-                severity="INFO",
-                source="fail2ban",
-                message=f"New bans from already-blocked subnets: {', '.join(noise[:5])}",
-                dedup_key=f"f2b:noise:{subnet_24(noise[0])}",
-                structured={"noise_ips": noise},
-            )
+    elif novel and len(novel) < min_new:
+        # Quietly absorb — anomaly detector will catch surges
+        logger.debug(
+            "fail2ban: %d new ban(s) (below threshold %d, suppressed)",
+            len(novel), min_new,
         )
+
     state.setdefault("monitor_state", {})["last_f2b_snapshot"] = " ".join(banned)
     return alerts

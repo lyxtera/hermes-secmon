@@ -66,7 +66,7 @@ _emit_tick_remediation() {
     echo "- \`journalctl -u ssh --since '1 hour ago' | grep 'Failed password'\` — Review logs"
     echo "- \`secmon --detect-botnet\` — Block aggressive subnets"
     cta="fail2ban-client status sshd"
-  elif [[ "${out}" == *"fail2ban:"* ]]; then
+  elif [[ "${out}" == *"fail2ban:"* ]] || [[ "${out}" == *"ban burst"* ]]; then
     echo "- \`fail2ban-client status sshd\` — List banned IPs"
     echo "- \`journalctl -u ssh --since '1 hour ago' | tail -30\` — Review auth"
     cta="fail2ban-client status sshd"

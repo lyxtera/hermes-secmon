@@ -82,6 +82,7 @@ def default_config() -> dict[str, Any]:
             "ssh_brute_force_threshold": 10,
             "invalid_user_threshold": 5,
             "kernel_error_threshold": 3,
+            "fail2ban_min_new_bans": 5,
         },
         "botnet": {
             "lookback_hours": 24,
