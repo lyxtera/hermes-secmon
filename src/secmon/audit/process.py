@@ -144,8 +144,53 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         state.setdefault("audit_baseline", {})["bpf_programs"] = current_ids
 
     # Process hollowing / code injection via /proc/*/maps
-    exclude_pids = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_pids", []))
-    exclude_comms = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_comms", []))
+    exclude_pids: set[int] = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_pids", []))
+    exclude_comms: set[str] = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_comms", []))
+
+    # Auto-exclude secmon and its child/parent processes — the audit shouldn't flag itself
+    secmon_cluster: set[int] = set()
+    for pid in proc_pids:
+        try:
+            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\x00", b" ").decode(
+                "utf-8", errors="replace"
+            )
+            if "secmon" in cmdline.lower():
+                secmon_cluster.add(pid)
+        except OSError:
+            continue
+
+    # Walk up parent chain from secmon processes (catches Hermes gateway as parent)
+    def _parent_chain(pid: int) -> set[int]:
+        chain: set[int] = set()
+        while pid > 1:
+            chain.add(pid)
+            try:
+                stat = open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace").read()
+                m = re.match(r"\d+ \(.+?\) \S (\d+)", stat)
+                if not m:
+                    break
+                pid = int(m.group(1))
+                if pid in chain:
+                    break  # loop
+            except OSError:
+                break
+        return chain
+
+    for spid in list(secmon_cluster):
+        secmon_cluster |= _parent_chain(spid)
+    # Walk down to find children of any secmon-cluster PID
+    for pid in proc_pids:
+        try:
+            stat = open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace").read()
+            m = re.match(r"\d+ \(.+?\) \S (\d+)", stat)
+            if m and int(m.group(1)) in secmon_cluster:
+                secmon_cluster.add(pid)
+        except OSError:
+            continue
+
+    exclude_pids.update(secmon_cluster)
+    # Also auto-exclude by comm name for dynamically spawned processes
+    exclude_comms |= {"secmon", "secmon-audit", "secmon.sh", "audit.sh"}
     for pid in list(proc_pids)[:300]:
         if pid in exclude_pids:
             continue
