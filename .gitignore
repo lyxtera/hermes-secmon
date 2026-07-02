@@ -20,8 +20,6 @@ htmlcov/
 .idea/
 .vscode/
 
-# Local config (use config.yaml.example as template)
-config.yaml
 
 # Testing
 .pytest_cache/
