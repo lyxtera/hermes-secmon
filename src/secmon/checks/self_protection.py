@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
+import re
 import stat
 from pathlib import Path
 
@@ -33,8 +35,6 @@ def _hermes_cron_registered(job_name: str) -> bool:
     jobs_path = os.path.expanduser("~/.hermes/cron/jobs.json")
     if os.path.isfile(jobs_path):
         try:
-            import json
-
             with open(jobs_path, encoding="utf-8") as fh:
                 data = json.load(fh)
             jobs = data if isinstance(data, list) else data.get("jobs", [])
@@ -46,6 +46,72 @@ def _hermes_cron_registered(job_name: str) -> bool:
         except (OSError, ValueError, TypeError):
             pass
     return False
+
+
+def _cron_interval_minutes(job_name: str, default: int = 15) -> int:
+    """Read the cron schedule for *job_name* and return its interval in minutes.
+
+    Parses common cron(5) expression shapes:
+      ``*/N * * * *``       → N minutes
+      ``M * * * *``          → 60 minutes
+      ``0 */N * * *``        → N hours → N×60 minutes
+      ``0 0 ...``            → 24 hours → 1440 minutes
+
+    If the job can't be read or the expression is unrecognised, return
+    *default*.
+    """
+    jobs_path = os.path.expanduser("~/.hermes/cron/jobs.json")
+    if not os.path.isfile(jobs_path):
+        return default
+    try:
+        with open(jobs_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return default
+    jobs = data if isinstance(data, list) else data.get("jobs", [])
+    if not isinstance(jobs, list):
+        return default
+
+    expr = ""
+    for job in jobs:
+        if isinstance(job, dict) and job.get("name") == job_name:
+            raw = job.get("schedule", {})
+            if isinstance(raw, dict):
+                expr = raw.get("expr", "")
+                if not expr:
+                    expr = raw.get("display", "")
+            elif isinstance(raw, str):
+                expr = raw
+            if not expr:
+                expr = job.get("schedule_display", "")
+            break
+
+    if not expr or not isinstance(expr, str):
+        return default
+
+    expr = expr.strip()
+
+    # */N * * * *  → every N minutes
+    m = re.fullmatch(r"\*/(\d+)\s+\*\s+\*\s+\*\s+\*", expr)
+    if m:
+        return int(m.group(1))
+
+    # M * * * *  → once per hour (at minute M)
+    m = re.fullmatch(r"\d+\s+\*\s+\*\s+\*\s+\*", expr)
+    if m:
+        return 60
+
+    # 0 */N ...  → every N hours
+    m = re.fullmatch(r"\d+\s+\*/(\d+)\s+\*\s+\*\s+\*", expr)
+    if m:
+        return int(m.group(1)) * 60
+
+    # 0 0 ...  → daily
+    m = re.fullmatch(r"\d+\s+\d+\s+\*\s+\*\s+\*", expr)
+    if m:
+        return 1440
+
+    return default
 
 
 def _collect_secmon_files(root: str) -> dict[str, str]:
@@ -106,10 +172,13 @@ def check(state: dict, cfg: dict) -> list[Alert]:
     prot = ab.setdefault("self_protection", {})
     initialized = bool(prot.get("initialized"))
 
-    # Missed tick detection (15-min cron expected)
+    # Missed tick detection — threshold is 2× the cron interval so normal
+    # schedule jitter never triggers, but a genuinely missed tick will.
     now = utcnow()
     last_tick = parse_iso(ms.get("last_tick"))
-    if initialized and last_tick and (now - last_tick).total_seconds() > 20 * 60:
+    cron_interval = _cron_interval_minutes(hermes_cron_job, default=15)
+    tick_threshold = max(cron_interval * 120, 600)  # 2× interval (in seconds), min 10 min
+    if initialized and last_tick and (now - last_tick).total_seconds() > tick_threshold:
         alerts.append(
             Alert(
                 severity="CRITICAL",
