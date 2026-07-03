@@ -70,6 +70,18 @@ def default_config() -> dict[str, Any]:
             "proc_hollow_exclude_pids": [],
             "proc_hollow_exclude_comms": [],
             "persist_exclude_prefixes": [],
+            "outbound_destinations": [
+                {
+                    "cidr": "149.154.160.0/20",
+                    "process": "hermes",
+                    "reason": "Telegram MTProto API",
+                },
+                {
+                    "cidr": "91.108.56.0/22",
+                    "process": "hermes",
+                    "reason": "Telegram MTProto API",
+                },
+            ],
         },
         "anomaly": {
             "baseline_min_samples": 4,

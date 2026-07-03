@@ -68,6 +68,35 @@ def test_outbound_suspicious(cfg, state, mock_commands):
     assert len(alerts) == 1
 
 
+def test_outbound_whitelist_skips_telegram(cfg, state, mock_commands):
+    """Connections to whitelisted Telegram CIDR by hermes process should not alert."""
+    mock_commands(
+        ["ss", "-tnp", "state", "established"],
+        "149.154.166.110:443 users:((\"hermes\",",
+    )
+    # Verify default whitelist covers this
+    assert any(
+        entry.get("cidr") == "149.154.160.0/20" and entry.get("process") == "hermes"
+        for entry in cfg["whitelist"].get("outbound_destinations", [])
+    )
+    alerts = outbound.check(state, cfg)
+    assert alerts == [], f"Expected no alerts for whitelisted Telegram connection, got: {alerts}"
+
+
+def test_outbound_whitelist_still_alerts_other_ips(cfg, state, mock_commands):
+    """Whitelist should not suppress alerts for non-whitelisted destinations."""
+    mock_commands(
+        ["ss", "-tnp", "state", "established"],
+        "149.154.166.110:443 users:((\"hermes\",\n"
+        "1.2.3.4:4444 users:((",
+    )
+    state["monitor_state"]["outbound_connections"] = {
+        "1.2.3.4:4444:": "1970-01-01T00:00:00Z",
+    }
+    alerts = outbound.check(state, cfg)
+    assert len(alerts) >= 1
+
+
 def test_run_checks_isolation(cfg, state, mock_commands):
     mock_commands(["fail2ban-client", "status", "sshd"], "")
     mock_commands(["journalctl", "--since", "5 minutes ago"], "")

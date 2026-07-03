@@ -6,7 +6,7 @@ import re
 
 from secmon.alerts import Alert
 from secmon.shell import run_cmd_safe
-from secmon.utils import is_private_or_loopback, parse_iso, utcnow
+from secmon.utils import is_private_or_loopback, ip_in_prefixes, parse_iso, utcnow
 
 C2_PORTS = {443, 8443, 853, 4443, 4444, 5555, 9001, 9050, 9150}
 DOH_HOST_PATTERNS = ("dns.google", "cloudflare-dns.com", "dns.quad9.net")
@@ -31,6 +31,28 @@ def _is_direct_ip_https(dest_ip: str, port: int) -> bool:
     return port in (443, 8443) and not is_private_or_loopback(dest_ip)
 
 
+def _is_whitelisted(dest_ip: str, dest_port: int, owner: str, cfg: dict) -> bool:
+    """Check if a connection matches a whitelisted outbound destination."""
+    entries = cfg.get("whitelist", {}).get("outbound_destinations", [])
+    for entry in entries:
+        # Check process match if specified
+        proc = entry.get("process", "")
+        if proc and owner != proc:
+            continue
+        # Check IP/CIDR match if specified
+        cidr = entry.get("cidr", "")
+        ip = entry.get("ip", "")
+        if cidr:
+            if ip_in_prefixes(dest_ip, [cidr]):
+                return True
+        elif ip:
+            if dest_ip == ip:
+                return True
+        elif not proc:
+            continue  # no filter criteria at all — skip
+    return False
+
+
 def check(state: dict, cfg: dict) -> list[Alert]:
     alerts: list[Alert] = []
     ms = state.setdefault("monitor_state", {})
@@ -51,6 +73,10 @@ def check(state: dict, cfg: dict) -> list[Alert]:
         owner = _process_owner(line)
         conn_key = f"{dest_ip}:{dest_port}:{owner}"
         seen_keys.add(conn_key)
+
+        # Skip whitelisted destinations (Telegram, etc.)
+        if _is_whitelisted(dest_ip, dest_port, owner, cfg):
+            continue
 
         first_seen = conn_tracker.get(conn_key)
         if not first_seen:
