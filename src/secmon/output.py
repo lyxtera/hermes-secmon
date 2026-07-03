@@ -8,6 +8,49 @@ from secmon.config import METRIC_KEYS
 from secmon.utils import parse_iso, utcnow
 
 
+METRIC_LABELS: dict[str, str] = {
+    "ssh_failed_24h": "SSH Failures",
+    "ssh_invalid_user_24h": "Invalid SSH Users",
+    "unique_attacker_ips": "Unique Attacker IPs",
+    "unique_attacker_subnets": "Unique Attacker /24s",
+    "f2b_banned_count": "Fail2ban Bans",
+    "botnet_chain_rules": "Botnet Chain Rules",
+    "martian_packets_24h": "Martian Packets",
+    "new_blocked_subnets_24h": "New Blocked Subnets",
+    "kernel_errors_24h": "Kernel Errors",
+    "listening_ports_count": "Listening Ports",
+    "established_conns": "Established Conns",
+}
+
+METRIC_IMPACT: dict[str, str] = {
+    "ssh_failed_24h": "Failed SSH logins often indicate brute-force or credential stuffing attempts",
+    "ssh_invalid_user_24h": "Logins for non-existent users suggest recon and username guessing",
+    "unique_attacker_ips": "Distinct sources targeting SSH indicate breadth of attack activity",
+    "unique_attacker_subnets": "Attacker /24s suggest distributed scan waves",
+    "f2b_banned_count": "Fail2ban bans reflect active defense response to abuse",
+    "botnet_chain_rules": "BOTNET firewall rules represent blocked hostile subnets",
+    "martian_packets_24h": "Impossible-source packets can reflect routing misconfig or spoofing",
+    "new_blocked_subnets_24h": "New blocklist entries suggest emerging attack waves",
+    "kernel_errors_24h": "Kernel errors may indicate hardware, driver, or stability issues",
+    "listening_ports_count": "Open listening sockets may reveal unexpected services or backdoors",
+    "established_conns": "Active sessions can show baseline drift that may indicate C2 or load changes",
+}
+
+METRIC_GUIDANCE: dict[str, str] = {
+    "ssh_failed_24h": "Review recent failed SSH login attempts and identify the most active source IPs",
+    "ssh_invalid_user_24h": "Review invalid-user SSH attempts to confirm whether enumeration is underway",
+    "unique_attacker_ips": "Identify which IPs are driving the highest volume of SSH failures and assess whether they are likely coordinated",
+    "unique_attacker_subnets": "Determine whether activity spans multiple /24 networks and consider tightening network controls",
+    "f2b_banned_count": "Confirm fail2ban is actively banning abusive IPs and check whether bans are escalating",
+    "botnet_chain_rules": "Inspect the BOTNET firewall chain and verify that newly detected hostile subnets are blocked",
+    "martian_packets_24h": "Review kernel messages for martian packets and assess whether spoofing or routing anomalies occurred",
+    "new_blocked_subnets_24h": "Inspect the botnet block log to understand which subnets were added and whether they look legitimate",
+    "kernel_errors_24h": "Review recent kernel error messages and correlate them with other observed anomalies",
+    "listening_ports_count": "List listening services and verify that any new ports are authorized and expected",
+    "established_conns": "Review established connections and map them to processes to identify unusual peers",
+}
+
+
 def format_status(state: dict, cfg: dict, metrics: dict[str, int] | None = None) -> str:
     lines = ["=== Security Monitor Status ===", ""]
     lines.append(f"State version: {state.get('version')}")
@@ -48,48 +91,6 @@ def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: in
     lines: list[str] = []
     baselines = state.get("baselines", {})
 
-    METRIC_LABELS = {
-        "ssh_failed_24h": "SSH Failures",
-        "ssh_invalid_user_24h": "Invalid SSH Users",
-        "unique_attacker_ips": "Unique Attacker IPs",
-        "unique_attacker_subnets": "Unique Attacker /24s",
-        "f2b_banned_count": "Fail2ban Bans",
-        "botnet_chain_rules": "Botnet Chain Rules",
-        "martian_packets_24h": "Martian Packets",
-        "new_blocked_subnets_24h": "New Blocked Subnets",
-        "kernel_errors_24h": "Kernel Errors",
-        "listening_ports_count": "Listening Ports",
-        "established_conns": "Established Conns",
-    }
-
-    METRIC_IMPACT = {
-        "ssh_failed_24h": "Failed SSH logins — spikes often mean brute-force or credential stuffing",
-        "ssh_invalid_user_24h": "Logins for non-existent users — recon and username guessing",
-        "unique_attacker_ips": "Distinct sources targeting SSH — breadth of attack surface",
-        "unique_attacker_subnets": "Attacker /24 subnets seen — distributed scan activity",
-        "f2b_banned_count": "IPs banned by fail2ban — active defense response to abuse",
-        "botnet_chain_rules": "iptables BOTNET rules — blocked hostile subnets",
-        "martian_packets_24h": "Impossible-source packets — routing misconfig or spoofing",
-        "new_blocked_subnets_24h": "New subnets added to blocklist — emerging attack waves",
-        "kernel_errors_24h": "Kernel log errors — hardware, driver, or stability issues",
-        "listening_ports_count": "Open listening sockets — unexpected growth may mean new services or backdoors",
-        "established_conns": "Active outbound/inbound sessions — baseline drift can signal C2 or load changes",
-    }
-
-    METRIC_CTA = {
-        "ssh_failed_24h": "journalctl -u ssh --since '24 hours ago' | grep 'Failed password' | tail -20",
-        "ssh_invalid_user_24h": "journalctl -u ssh --since '24 hours ago' | grep 'Invalid user' | tail -20",
-        "unique_attacker_ips": "journalctl -u ssh --since '24 hours ago' | grep 'Failed password' | awk '{print $(NF-3)}' | sort | uniq -c | sort -rn | head -15",
-        "unique_attacker_subnets": "secmon --detect-botnet",
-        "f2b_banned_count": "fail2ban-client status sshd",
-        "botnet_chain_rules": "iptables -L BOTNET -n --line-numbers",
-        "martian_packets_24h": "dmesg -T | grep -i martian | tail -20",
-        "new_blocked_subnets_24h": "tail -30 /var/log/secmon-botnet.log",
-        "kernel_errors_24h": "journalctl -k --since '24 hours ago' -p err | tail -20",
-        "listening_ports_count": "ss -tlnp",
-        "established_conns": "ss -tnp state established | head -30",
-    }
-
     elevated_ctas: list[str] = []
 
     lines.append("### 📅 Daily Security Digest")
@@ -109,10 +110,8 @@ def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: in
             stdev = bl.get("stdev", 0)
             if delta > stdev * 2:
                 delta_str = f"⚠️ {delta:+d}"
-                if key in METRIC_CTA:
-                    elevated_ctas.append(
-                        f"{label} above baseline — `{METRIC_CTA[key]}`"
-                    )
+                if key in METRIC_GUIDANCE:
+                    elevated_ctas.append(f"{label} is elevated — {METRIC_GUIDANCE[key]}")
             elif delta < -stdev * 2:
                 delta_str = f"✅ {delta:+d}"
             else:
@@ -375,104 +374,130 @@ CHECK_ID_EMOJI = {
 
 FINDING_DIVIDER = "· · ·"
 
-CHECK_ID_CTA: dict[str, str] = {
-    "proc_hollow_anon": "cat /proc/<pid>/maps | grep anon",
-    "proc_hollow_deleted": "ls -la /proc/<pid>/exe && cat /proc/<pid>/cmdline",
-    "proc_hollow_rwx": "grep -E 'rwx' /proc/<pid>/maps",
-    "proc_spoof": "cat /proc/<pid>/comm && readlink /proc/<pid>/exe",
-    "hidden_proc": "ps aux && ls /proc/<pid>",
-    "proc_lineage_web_shell": "pstree -p <pid> && cat /proc/<pid>/cmdline",
-    "proc_lineage_inject": "pstree -p <pid> && cat /proc/<pid>/status | grep PPid",
-    "proc_root_tmp": "ls -la <path> && cat /proc/<pid>/cmdline",
-    "proc_root_deleted": "ls -la /proc/<pid>/exe",
-    "bad_module": "lsmod && modinfo <module>",
-    "kernel_tainted": "cat /proc/sys/kernel/tainted",
-    "kernel_sysctl_change": "sysctl -a | diff - baseline-sysctl.txt",
-    "kernel_modules_enabled": "sysctl kernel.modules_disabled",
-    "file_changed": "sha256sum <path> && ls -la <path>",
-    "file_removed": "ls -la <path>",
-    "world_writable": "ls -la <path>",
-    "ld_preload": "cat /etc/ld.so.preload",
-    "hidden_tmp": "ls -la <path>",
-    "unexpected_suid": "find / -perm -4000 -not -path '/proc/*' 2>/dev/null | head -30",
-    "new_listen_port": "ss -tlnp | grep <port>",
-    "port_changed": "ss -tlnp | grep <port>",
-    "port_removed": "ss -tlnp",
-    "fw_policy": "iptables -L -n -v",
-    "fw_chain": "iptables -L -n -v",
-    "webshell": "head -50 <path>",
-    "secret_world_readable": "ls -la <path>",
-    "secret_key_tmp": "ls -la <path>",
-    "secret_pattern": "grep -n . <path> | head -20",
-    "secret_authkeys_perm": "ls -la <path>",
-    "persist_new": "systemctl list-unit-files --state=enabled | tail -20",
-    "persist_modified": "systemctl cat <unit>",
-    "persist_removed": "systemctl list-unit-files | grep <unit>",
-    "cron_suspicious": "crontab -l && ls -la /etc/cron.*",
-    "modified_bin": "debsums -c /bin /usr/bin 2>/dev/null | head -20",
-    "tmp_executable": "ls -la <path>",
-    "sysctl": "sysctl <key>",
-    "sec_updates": "apt list --upgradable 2>/dev/null | grep -i security",
-    "unattended": "systemctl status unattended-upgrades",
-    "pass_aging": "chage -l root",
-    "sshd_config": "sshd -T | grep -E 'permit|auth|login|password'",
-    "nopasswd": "grep -v '^#' /etc/passwd | awk -F: '$2==\"\"'",
-    "systemd_failed": "systemctl --failed",
-    "log_stale": "ls -la <path> && stat <path>",
-    "log_truncated": "ls -la <path> && tail -5 <path>",
-    "risk_increase": "secmon --audit",
-    "NC-1-privileged": "docker ps --format 'table {{.Names}}\t{{.Status}}'",
-    "NC-1-sock": "docker inspect <container> | grep -A5 Mounts",
-    "NC-1-hostmount": "docker inspect <container> | grep -A5 Mounts",
-    "NC-2-promisc": "ip link show | grep PROMISC",
-    "NC-2-tun": "ip link show type tun",
-    "NC-2-arp": "ip neigh show",
-    "NC-3-dns": "cat /etc/resolv.conf",
-    "NC-3-ndots": "grep ndots /etc/resolv.conf",
-    "NC-3-nsswitch": "cat /etc/nsswitch.conf",
-    "NC-3-hosts": "cat /etc/hosts",
-    "NC-4-expired": "openssl x509 -in <path> -noout -dates",
-    "NC-4-expiring": "openssl x509 -in <path> -noout -dates",
-    "NC-4-soon": "certbot certificates 2>/dev/null || openssl x509 -in <path> -noout -dates",
-    "NC-5-uid0": "awk -F: '$3==0 {print}' /etc/passwd",
-    "NC-5-newuser": "getent passwd",
-    "NC-5-emptypw": "awk -F: '$2==\"\" {print $1}' /etc/shadow 2>/dev/null",
-    "NC-5-privgroup": "getent group sudo wheel admin",
-    "NC-5-authkeys": "cat <path>",
-    "NC-6-tmpfs": "mount | grep tmpfs",
-    "NC-6-bind": "mount | grep bind",
-    "NC-6-fakeproc": "mount | grep /proc",
-    "NC-6-noexec": "mount | grep -v noexec",
-    "NC-7-newtimer": "systemctl list-timers --all",
-    "NC-7-newsvc": "systemctl list-units --type=service --state=running",
-    "NC-7-execstart": "systemctl cat <unit>",
-    "NC-7-masked": "systemctl is-enabled <unit>",
-    "NC-8-ntp": "timedatectl status",
-    "NC-8-drift": "timedatectl status",
-    "NC-9-nobpf": "ls /sys/fs/bpf",
-    "NC-9-nobpftool": "which bpftool",
-    "NC-9-unpriv": "sysctl kernel.unprivileged_bpf_disabled",
-    "NC-9-newprog": "bpftool prog list",
-    "NC-9-newmap": "bpftool map list",
-    "NC-10-nodebsums": "debsums -c 2>/dev/null | head -20",
-    "NC-10-critical": "debsums -c 2>/dev/null | head -20",
-    "NC-10-modified": "debsums -c 2>/dev/null | head -20",
-    "NC-10-apt": "apt-get check",
-    "NC-11-storage": "journalctl -u auditd --since '24 hours ago' | tail -20",
-    "NC-11-verify": "ausearch -m USER_AUTH 2>/dev/null | tail -10",
-    "NC-11-gap": "ausearch --start today 2>/dev/null | tail -10",
-    "auditd": "systemctl status auditd",
-    "invalid_users": "journalctl -u ssh --since '24 hours ago' | grep 'Invalid user' | tail -20",
-    "ssh_stats": "journalctl -u ssh --since '24 hours ago' | tail -30",
-    "trend_new": "secmon --audit",
-    "trend_resolved": "secmon --audit",
-    "trend_persistent": "secmon --audit",
+
+CHECK_ID_GUIDANCE: dict[str, str] = {
+    # Process memory / hiding
+    "proc_hollow_anon": "Inspect the memory map of process {pid} for anonymous executable segments",
+    "proc_hollow_deleted": "Verify whether process {pid} is running from a deleted binary and collect its command line",
+    "proc_hollow_rwx": "Check whether process {pid} has RWX memory pages that indicate potential shellcode",
+    "proc_spoof": "Compare the process name for {pid} with the actual binary path to detect masquerading",
+    "hidden_proc": "List processes and confirm whether process {pid} is hidden or missing from standard views",
+    "proc_lineage_web_shell": "Review the parent-child process chain of {pid} to identify webserver-origin execution",
+    "proc_lineage_inject": "Validate the parent process chain of {pid} to look for unexpected spawning (injection indicator)",
+    "proc_root_tmp": "Investigate the suspicious file {path} executed with root privileges and tie it to process {pid}",
+    "proc_root_deleted": "Confirm whether process {pid} is executing from a binary that no longer exists on disk",
+
+    # Kernel / system integrity
+    "bad_module": "Inspect loaded kernel modules and validate whether module {module} is present and unexpected",
+    "kernel_tainted": "Check whether the kernel is tainted (unexpected or unsigned modules) and note details",
+    "kernel_sysctl_change": "Compare current sysctl settings against the last baseline and identify what changed",
+    "kernel_modules_enabled": "Verify whether kernel module loading is still allowed and whether it matches the baseline policy",
+
+    # File integrity / secrets / permissions
+    "file_changed": "Verify file {path} integrity and confirm whether it matches the baseline hash/metadata",
+    "file_removed": "Confirm removal of expected file {path} and determine what replaced or re-created it",
+    "world_writable": "Identify who can write to {path} and whether permissions are excessive for the risk model",
+    "ld_preload": "Check for active LD_PRELOAD configuration that could be used for library injection",
+    "hidden_tmp": "Examine suspicious temporary file {path} and determine its origin and purpose",
+    "unexpected_suid": "Enumerate unexpected SUID binaries and assess whether they represent privilege-escalation risk",
+
+    # Network exposure
+    "new_listen_port": "Identify which process is listening on port {port} and verify it is expected",
+    "port_changed": "Determine what changed for port {port} (process/ownership) and assess for service hijack",
+    "port_removed": "Review the service landscape to understand why a previously seen port is no longer listening",
+    "fw_policy": "Review firewall default policy and confirm inbound rules are not overly permissive",
+    "fw_chain": "Review firewall chains and verify that expected drop/reject rules still exist",
+
+    # Content / data
+    "webshell": "Open {path} and determine whether it matches webshell signatures or suspicious execution patterns",
+    "secret_world_readable": "Check {path} permissions and determine whether sensitive data is exposed to non-owners",
+    "secret_key_tmp": "Inspect the contents and access pattern of {path} to assess credential/key leakage risk",
+    "secret_pattern": "Search within {path} for credential-like patterns and capture what matched",
+    "secret_authkeys_perm": "Validate permissions on SSH authorized_keys file {path} and determine if access should be restricted",
+
+    # Persistence
+    "persist_new": "Identify new persistence mechanisms that appeared since baseline (services/timers/etc.)",
+    "persist_modified": "Inspect persistence entry {unit} and determine how it differs from baseline and why",
+    "persist_removed": "Confirm whether persistence entry {unit} was removed intentionally and whether that affects stability",
+    "cron_suspicious": "Review cron configuration and identify any entries pointing to writable or suspicious locations",
+
+    # System updates / auth policy
+    "modified_bin": "Verify whether system binaries differ from expected package-provided versions",
+    "tmp_executable": "Identify executable files in world-writable {path} and assess malware staging risk",
+    "sysctl": "Review sysctl key {key} and confirm it does not weaken the security baseline",
+    "sec_updates": "Check whether security updates are pending and prioritize patching high-severity items",
+    "unattended": "Verify whether unattended upgrades are enabled and functioning for routine patching",
+    "pass_aging": "Review password aging policy and determine whether it meets your security requirements",
+    "sshd_config": "Review sshd effective configuration and confirm safe authentication and login policy",
+    "nopasswd": "Find accounts with empty passwords and assess whether they represent an immediate compromise risk",
+
+    # Monitoring / evidence quality
+    "systemd_failed": "Inspect failed systemd units and decide whether failures impact security visibility",
+    "log_stale": "Check log {path} freshness and determine whether logging stopped unexpectedly",
+    "log_truncated": "Investigate possible log truncation of {path} and ensure you preserve evidence",
+    "risk_increase": "Run a full forensic audit to understand why the risk score increased",
+
+    # Container hardening / namespace breakouts
+    "NC-1-privileged": "Review containers running with elevated privileges and determine which workloads are exposed",
+    "NC-1-sock": "Inspect container {container} for access to sensitive sockets and mounts that enable escape",
+    "NC-1-hostmount": "Inspect container {container} for host filesystem mounts that enable data exposure or persistence",
+    "NC-2-promisc": "Check whether network interfaces are in promiscuous mode and assess sniffing risk",
+    "NC-2-tun": "Detect whether TUN/TAP devices are present and evaluate whether they enable unexpected network paths",
+    "NC-2-arp": "Inspect ARP table anomalies (unexpected mappings) for spoofing or scan behavior",
+    "NC-3-dns": "Review DNS resolver configuration and evaluate whether it matches your security expectations",
+    "NC-3-ndots": "Review ndots behavior and determine if resolution quirks could enable attacker-controlled lookups",
+    "NC-3-nsswitch": "Review name service switch configuration and ensure the lookup order is safe",
+    "NC-3-hosts": "Review /etc/hosts changes and determine whether they could redirect critical domains",
+    "NC-4-expired": "Check certificate {path} validity and confirm whether expiration impacts security services",
+    "NC-4-expiring": "Check certificate {path} expiration window and schedule renewal if needed",
+    "NC-4-soon": "Review certificates for {path} and plan renewal to avoid service failure",
+    "NC-5-uid0": "List users with UID 0 (root-equivalent) and confirm they are expected",
+    "NC-5-newuser": "Review newly created user accounts since baseline and assess legitimacy",
+    "NC-5-emptypw": "Identify users with empty passwords and treat as an urgent authentication risk",
+    "NC-5-privgroup": "Review users in privileged groups and assess whether membership is appropriate",
+    "NC-5-authkeys": "Review SSH authorized_keys content at {path} and verify that only trusted keys exist",
+    "NC-6-tmpfs": "Verify tmpfs mounts and evaluate whether they enable suspicious staging behavior",
+    "NC-6-bind": "Inspect bind mounts and confirm no unsafe host paths are exposed",
+    "NC-6-fakeproc": "Detect fake /proc techniques and confirm whether process hiding is possible",
+    "NC-6-noexec": "Check mounts for executable permissions and determine whether noexec protections are missing",
+    "NC-7-newtimer": "Identify newly created systemd timers and assess whether they introduce unexpected execution",
+    "NC-7-newsvc": "Identify newly running systemd services and assess whether they are legitimate",
+    "NC-7-execstart": "Inspect systemd unit {unit} and determine whether ExecStart points to writable scripts or unsafe binaries",
+    "NC-7-masked": "Confirm whether systemd unit {unit} is masked and assess whether masking appears malicious or legitimate",
+    "NC-8-ntp": "Check time synchronization status and assess whether time drift could affect security decisions",
+    "NC-8-drift": "Review clock drift behavior and evaluate potential impacts on auditing and detection",
+    "NC-9-nobpf": "Check whether BPF filesystem access is restricted and whether monitoring capability is reduced",
+    "NC-9-nobpftool": "Check whether bpftool is available and whether you can inspect eBPF programs when needed",
+    "NC-9-unpriv": "Verify whether unprivileged BPF is enabled/disabled and assess exploit exposure",
+    "NC-9-newprog": "Check whether new BPF programs were loaded since baseline",
+    "NC-9-newmap": "Check whether new BPF maps were created since baseline",
+    "NC-10-nodebsums": "Verify whether package integrity checks were unavailable and assess detection gaps",
+    "NC-10-critical": "Inspect package integrity failures for critical packages and determine what changed",
+    "NC-10-modified": "Review modified package files and assess for tampering",
+    "NC-10-apt": "Check the package database consistency and address any apt integrity issues",
+    "NC-11-storage": "Review recent auditd/storage logs to understand if storage integrity or logging is impaired",
+    "NC-11-verify": "Review authentication audit events to see whether expected records are missing",
+    "NC-11-gap": "Investigate auditing gaps (missing events) since today and ensure evidence continuity",
+    "auditd": "Verify that auditd is healthy and collecting events as expected",
+    "invalid_users": "Review SSH invalid-user activity and identify which sources appear suspicious",
+    "ssh_stats": "Review SSH authentication statistics and compare to expected baseline behavior",
+    "trend_new": "Run a full forensic audit to investigate the newly appearing finding",
+    "trend_resolved": "Record the resolved state and verify no related persistence remains",
+    "trend_persistent": "Run a full forensic audit because the issue persists across audit cycles",
 }
 
 
-def _render_cta(check_id: str, detail: dict[str, Any]) -> str:
-    """Fill CTA template placeholders from finding detail."""
-    template = CHECK_ID_CTA.get(check_id, "secmon --audit")
+class _SafeDict(dict[str, str]):
+    """Format helper: missing keys keep the placeholder token."""
+
+    def __missing__(self, key: str) -> str:  # pragma: no cover (defensive)
+        return "{" + key + "}"
+
+
+def _render_guidance(check_id: str, detail: dict[str, Any]) -> str:
+    """Render AI-agent guidance for a finding in Telegram-friendly text."""
+    template = CHECK_ID_GUIDANCE.get(check_id, "Run a full forensic audit with secmon")
+
     pid = detail.get("pid") or detail.get("parent_pid") or detail.get("child_pid")
     path = detail.get("path") or detail.get("exe") or ""
     port = detail.get("port") or detail.get("listen_port") or ""
@@ -481,45 +506,17 @@ def _render_cta(check_id: str, detail: dict[str, Any]) -> str:
     module = detail.get("module") or detail.get("module_name") or ""
     key = detail.get("key") or detail.get("sysctl") or ""
 
-    replacements = {
-        "<pid>": str(pid) if pid else "<pid>",
-        "<path>": str(path) if path else "<path>",
-        "<port>": str(port) if port else "<port>",
-        "<unit>": str(unit) if unit else "<unit>",
-        "<container>": str(container) if container else "<container>",
-        "<module>": str(module) if module else "<module>",
-        "<key>": str(key) if key else "<key>",
+    context = {
+        "pid": str(pid) if pid else "",
+        "path": str(path) if path else "",
+        "port": str(port) if port else "",
+        "unit": str(unit) if unit else "",
+        "container": str(container) if container else "",
+        "module": str(module) if module else "",
+        "key": str(key) if key else "",
     }
-    result = template
-    for placeholder, value in replacements.items():
-        result = result.replace(placeholder, value)
-    return result
 
-
-def _format_details(detail: dict[str, Any]) -> str:
-    """Pretty-print detail fields as bullet points, no JSON."""
-    if not detail:
-        return ""
-    lines: list[str] = []
-    for key, val in detail.items():
-        if key in ("pid", "parent_pid", "child_pid"):
-            label = {"pid": "PID", "parent_pid": "Parent PID", "child_pid": "Child PID"}.get(
-                key, "PID"
-            )
-            lines.append(f"     • {label}: `{val}`")
-        elif key == "path":
-            lines.append(f"     • Path: `{val}`")
-        elif key == "exe":
-            lines.append(f"     • Binary: `{val}`")
-        elif key == "mode":
-            lines.append(f"     • Permissions: `{val}`")
-        elif key == "content":
-            lines.append(f"     • Content: `{val[:120]}`")
-        elif key == "expected":
-            lines.append(f"     • Expected: `{val}`")
-        else:
-            lines.append(f"     • {key}: `{val}`")
-    return "\n".join(lines)
+    return template.format_map(_SafeDict(context))
 
 
 def format_audit_markdown(result: dict[str, Any]) -> str:
@@ -599,8 +596,8 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
                 lines.extend(detail_lines)
                 lines.append("")
 
-            cta = _render_cta(check_id, detail)
-            lines.append(f"▶ `{cta}`")
+            guidance = _render_guidance(check_id, detail)
+            lines.append(f"▶ {guidance}")
             lines.append("")
 
             # Visual separator between findings

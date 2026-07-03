@@ -3,7 +3,7 @@
 from secmon.config import METRIC_KEYS
 from secmon.output import (
     FINDING_DIVIDER,
-    _render_cta,
+    _render_guidance,
     format_audit_markdown,
     format_daily_digest,
     format_status,
@@ -33,7 +33,7 @@ def test_format_daily_elevated_ctas():
     metrics["ssh_failed_24h"] = 500
     out = format_daily_digest(state, metrics)
     assert "What to check" in out
-    assert "journalctl -u ssh" in out
+    assert "Review recent failed SSH login attempts" in out
     assert "| Metric |" not in out
 
 
@@ -55,13 +55,16 @@ def test_format_audit_markdown_cta_and_divider():
     }
     out = format_audit_markdown(result)
     assert FINDING_DIVIDER in out
-    assert "▶ `cat /proc/1234/maps | grep anon`" in out
+    assert "▶ Inspect the memory map of process 1234 for anonymous executable segments" in out
     assert "---" not in out.split("▶")[0]  # no markdown hr between findings
 
 
-def test_render_cta_substitutes_placeholders():
-    cta = _render_cta(
+def test_render_guidance_substitutes_placeholders():
+    guidance = _render_guidance(
         "new_listen_port",
         {"port": 4444, "path": "/ignored"},
     )
-    assert cta == "ss -tlnp | grep 4444"
+    assert (
+        guidance
+        == "Identify which process is listening on port 4444 and verify it is expected"
+    )

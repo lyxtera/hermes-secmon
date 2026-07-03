@@ -1,7 +1,5 @@
 name: secmon
-version: "1.0"
+version: "1.4.1"
 description: >
   Production-grade security audit and monitoring for Debian 12 VPS.
   Secures the server while the Hermes agent is deployed there.
-requires_env:
-  - SECMON_OWN_IP
