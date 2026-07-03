@@ -300,6 +300,7 @@ Secmon scanners are intentionally aggressive. Use these config options in `white
 | `whitelist.proc_hollow_exclude_pids` | Exclude specific PIDs from anonymous mapping checks | `[449]` |
 | `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node"]` |
 | `whitelist.persist_exclude_prefixes` | Ignore secmon/hermes own systemd units in persistence diff | `["/etc/systemd/system/secmon-"]` |
+| `whitelist.outbound_destinations` | Suppress outbound alerts for known-good destinations. Each entry supports optional `cidr`, `ip`, and/or `process` matching | See below |
 | `dns.expected_nameservers` | Known-good DNS servers to suppress NC-3 alerts | `["1.1.1.1"]` |
 | `hardening.skip_root_login_check` | Allow root SSH login without audit warning | `True` |
 | `hardening.skip_fw_policy_check` | Don't flag INPUT ACCEPT on remote servers (lockout risk) | `True` |
@@ -307,6 +308,27 @@ Secmon scanners are intentionally aggressive. Use these config options in `white
 | `sysctl.expected_values` | Accept multiple valid sysctl values (e.g. `kptr_restrict=1` or `2`) | `kernel.kptr_restrict: ["1", "2"]` |
 
 These are **per-design** overrides — they let you tune for your environment without forking the scanner logic. All defaults are conservative (maximum alerts).
+
+#### Outbound destination whitelist
+
+```yaml
+whitelist:
+  outbound_destinations:
+    - cidr: "149.154.160.0/20"
+      process: "hermes"
+      reason: "Telegram MTProto API"
+    - cidr: "91.108.56.0/22"
+      process: "hermes"
+      reason: "Telegram MTProto API"
+    - ip: "1.2.3.4"
+      reason: "monitoring server"
+```
+
+Each entry supports optional `cidr`, `ip`, and/or `process` matching. A connection is suppressed if it matches **any** entry. Omit `process` to match any process on that CIDR/IP.
+
+#### Tick gap auto-detection
+
+The self-protection check's missed-tick threshold is dynamically calculated from the actual cron schedule — no hardcoded value. It reads `~/.hermes/cron/jobs.json` and sets the alert threshold to **2× the expected interval**. A 15-minute cron gets a 30-minute grace; a 30-minute cron gets a 60-minute grace. Falls back to 15 minutes if the job can't be found.
 
 ## Project layout
 

@@ -280,6 +280,7 @@ The system must run without any configuration file present, using only defaults.
 | **Whitelist** | `own_ip` | Required — no default | Server's own public IP (excluded from alerts) |
 | **Whitelist** | `known_ssh_ips` | `[own_ip]` | IPs that are allowed SSH access |
 | **Whitelist** | `network_prefixes` | RFC 1918 ranges | IP prefixes never blocked (private + loopback) |
+| **Whitelist** | `outbound_destinations` | `[]` (empty) | Known-good outbound destinations to suppress alerts for. Each entry: `cidr`, `ip`, and/or `process` |
 | **Anomaly** | `baseline_min_samples` | `4` | Minimum samples before anomaly detection activates |
 | **Anomaly** | `max_baseline_days` | `30` | Maximum age of baseline samples before expiry |
 | **Anomaly** | `dedup_slot_hours` | `6` | Minimum gap between baseline recordings |
@@ -614,9 +615,11 @@ Each check is an independent function that returns either `nil` (no finding) or 
 
 **Logic:**
 1. Run `ss -tnp state established` to list all established connections.
-2. Filter out loopback (127.0.0.1, ::1) and known infrastructure (Telegram relay IPs, Hermes gateway).
-3. Check destination ports against suspicious list (IRC: 6660-6700, common C2: 4444, 5555, 8080, 9090, and any SSH-reverse ports like 2222).
-4. If any match, alert with destination IP:port and process info.
+2. Extract the **second** IP:port pair from each line (the remote peer, not the local address).
+3. Filter out loopback (127.0.0.1, ::1) and private IPs.
+4. Check if the connection matches a whitelisted destination from configuration (`whitelist.outbound_destinations`), which supports matching by CIDR, exact IP, and/or process name — if matched, skip all further alert logic.
+5. Check destination ports against suspicious list (IRC: 6660-6700, common C2: 4444, 5555, 8080, 9090, and any SSH-reverse ports like 2222).
+6. If any match, alert with destination IP:port and process info.
 
 **Dedup:** Per `{destination_ip}:{destination_port}`, 24-hour window.
 
@@ -634,8 +637,8 @@ Additional C2 heuristics (implemented):
 **Severity:** CRITICAL / HIGH
 
 **Logic:**
-1. On each tick, record `last_tick` and alert if gap > 20 minutes (missed cron).
-2. Verify cron entry containing `secmon --tick` exists in root crontab.
+1. On each tick, record `last_tick` and alert if the gap exceeds the expected interval. The threshold is dynamically calculated by reading the cron job's schedule from `~/.hermes/cron/jobs.json` and applying a 2× multiplier (e.g., 15-min cron → 30-min threshold, 30-min cron → 60-min threshold). Falls back to 15 minutes if the job can't be found.
+2. Verify cron entry containing `secmon --tick` exists in root crontab or Hermes cron.
 3. Verify `installation.source_dir` symlink target has not changed since baseline.
 4. Verify `installation.cli_path` symlink target has not changed.
 5. SHA-256 baseline all `src/secmon/**/*.py` under source dir; alert on changes.
