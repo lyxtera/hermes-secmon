@@ -12,6 +12,26 @@ from secmon.utils import parse_iso, sanitize_message, utcnow, utcnow_iso
 
 logger = logging.getLogger("secmon.alerts")
 
+SEVERITY_EMOJI = {
+    "CRITICAL": "🔴",
+    "HIGH": "🟠",
+    "MEDIUM": "🟡",
+    "LOW": "🔵",
+    "INFO": "ℹ️",
+}
+
+SOURCE_LABELS = {
+    "fail2ban": "Fail2ban",
+    "brute_force": "SSH Brute-force",
+    "ssh_session": "SSH Session",
+    "ssh": "SSH",
+    "outbound": "Outbound Connection",
+    "anomaly": "Anomaly",
+    "botnet": "Botnet Block",
+    "self_protection": "Self-integrity",
+    "c2": "C2 Connection",
+}
+
 SEVERITY_ORDER = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 # Dedup windows in seconds per spec §11.2
@@ -107,6 +127,37 @@ def audit_finding_to_alert(finding: Any) -> Alert:
     )
 
 
+def _stdout_source_label(alert: Alert) -> str:
+    """Human-readable source label for gateway/cron delivery."""
+    source = alert.source
+    if source.startswith("audit:"):
+        check_id = source.split(":", 1)[1]
+        label = check_id.replace("_", " ").title()
+        return f"Audit ({label})"
+    if source.startswith("enum:"):
+        return "Enumeration"
+    if source.startswith("port:"):
+        return "Port Scan"
+    if source.startswith("bf_burst:"):
+        return "Ban Burst"
+    if source.startswith("f2b:"):
+        return "Fail2ban"
+    return SOURCE_LABELS.get(source, source.replace("_", " ").title())
+
+
+def _stdout_context_suffix(alert: Alert) -> str:
+    """One-line explanation of what triggered the alert."""
+    source = alert.source
+    if source.startswith("audit:"):
+        check_id = source.split(":", 1)[1]
+        from secmon.output import CHECK_ID_EXPLANATIONS
+
+        explanation = CHECK_ID_EXPLANATIONS.get(check_id, "")
+        if explanation:
+            return f" — _{explanation}_"
+    return ""
+
+
 def _stdout_remediation_hint(alert: Alert) -> str:
     """Short per-alert action hint for gateway/cron delivery."""
     source = alert.source
@@ -187,8 +238,13 @@ def dispatch(
         new_alerts.append(alert)
     if stdout and new_alerts:
         for a in new_alerts:
+            emoji = SEVERITY_EMOJI.get(a.severity, "•")
+            label = _stdout_source_label(a)
+            context = _stdout_context_suffix(a)
             print(
-                f"**{a.severity}** `{a.source}`: {sanitize_message(a.message)}"
+                f"{emoji} **{a.severity}** — {label}: "
+                f"{sanitize_message(a.message)}"
+                f"{context}"
                 f"{_stdout_remediation_hint(a)}"
             )
     return new_alerts

@@ -8,8 +8,10 @@ from secmon.audit.base import AuditFinding
 def run(state: dict, cfg: dict, current_findings: list[AuditFinding]) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     prev = state.get("last_audit_findings", [])
-    prev_ids = {f.get("check_id") for f in prev}
-    cur_ids = {f.check_id for f in current_findings}
+    # Exclude internal Trend-layer meta checks so they don't pollute resolved/persistent
+    _INTERNAL_TREND_CHECKS = {"layer_count", "trend_new", "trend_resolved", "trend_persistent", "risk_increase"}
+    prev_ids = {f.get("check_id") for f in prev if f.get("check_id") not in _INTERNAL_TREND_CHECKS}
+    cur_ids = {f.check_id for f in current_findings if f.check_id not in _INTERNAL_TREND_CHECKS}
 
     new_ids = cur_ids - prev_ids
     resolved = prev_ids - cur_ids
@@ -21,8 +23,17 @@ def run(state: dict, cfg: dict, current_findings: list[AuditFinding]) -> list[Au
                 AuditFinding("INFO", 8, "trend_new", f"NEW: [{f.severity}] {f.message}")
             )
 
+    # Build lookup from prev for enriched resolved messages
+    prev_by_id: dict[str, dict] = {}
+    for f in prev:
+        cid = f.get("check_id")
+        if cid and cid not in _INTERNAL_TREND_CHECKS:
+            prev_by_id[cid] = f
+
     for pid in resolved:
-        findings.append(AuditFinding("INFO", 8, "trend_resolved", f"RESOLVED: {pid}"))
+        prev_finding = prev_by_id.get(pid, {})
+        original = f" [{prev_finding.get('severity', '?')}] {prev_finding.get('message', pid)}" if prev_finding else f" [{pid}]"
+        findings.append(AuditFinding("INFO", 8, "trend_resolved", f"RESOLVED{original}"))
 
     if persistent:
         findings.append(

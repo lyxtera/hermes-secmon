@@ -27,7 +27,7 @@ def run_audit_mode(state: dict, cfg: dict) -> int:
         for f in result.get("findings", [])
     ]
     alerts = findings_to_alerts(findings, min_severity="HIGH")
-    dispatch(alerts, state, cfg)
+    dispatch(alerts, state, cfg, stdout=False)
 
     print(format_audit_markdown(result))
     save_state(cfg, state)
