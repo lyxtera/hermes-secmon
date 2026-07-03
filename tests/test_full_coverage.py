@@ -95,7 +95,10 @@ def test_fail2ban_in_list_parsing(cfg, state, mock_commands):
 
 
 def test_outbound_port_range(cfg, state, mock_commands):
-    mock_commands(["ss", "-tnp", "state", "established"], "1.2.3.4:6666 users:((")
+    mock_commands(
+        ["ss", "-tnp", "state", "established"],
+        "0.0.0.0:50000        1.2.3.4:6666      users:((",
+    )
     alerts = outbound.check(state, cfg)
     assert len(alerts) == 1
 

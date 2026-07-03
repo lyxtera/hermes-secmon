@@ -63,7 +63,10 @@ def test_unauthorized_ssh(cfg, state, mock_commands):
 
 
 def test_outbound_suspicious(cfg, state, mock_commands):
-    mock_commands(["ss", "-tnp", "state", "established"], "1.2.3.4:4444 users:((")
+    mock_commands(
+        ["ss", "-tnp", "state", "established"],
+        "0.0.0.0:50000        1.2.3.4:4444      users:((",
+    )
     alerts = outbound.check(state, cfg)
     assert len(alerts) == 1
 
@@ -72,7 +75,7 @@ def test_outbound_whitelist_skips_telegram(cfg, state, mock_commands):
     """Connections to whitelisted Telegram CIDR by hermes process should not alert."""
     mock_commands(
         ["ss", "-tnp", "state", "established"],
-        "149.154.166.110:443 users:((\"hermes\",",
+        "0.0.0.0:50000        149.154.166.110:443   users:((\"hermes\",",
     )
     # Verify default whitelist covers this
     assert any(
@@ -87,8 +90,8 @@ def test_outbound_whitelist_still_alerts_other_ips(cfg, state, mock_commands):
     """Whitelist should not suppress alerts for non-whitelisted destinations."""
     mock_commands(
         ["ss", "-tnp", "state", "established"],
-        "149.154.166.110:443 users:((\"hermes\",\n"
-        "1.2.3.4:4444 users:((",
+        "0.0.0.0:50000        149.154.166.110:443   users:((\"hermes\",\n"
+        "0.0.0.0:50001        1.2.3.4:4444         users:((",
     )
     state["monitor_state"]["outbound_connections"] = {
         "1.2.3.4:4444:": "1970-01-01T00:00:00Z",

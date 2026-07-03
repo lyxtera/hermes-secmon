@@ -64,10 +64,14 @@ def check(state: dict, cfg: dict) -> list[Alert]:
     for line in out.splitlines():
         if "127.0.0.1" in line or "::1" in line:
             continue
-        m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\s", line)
-        if not m:
+        # ss -tnp output: Local:Port  Peer:Port  users:((...))
+        # Take the second IP:port pair as the peer (remote) address
+        pairs = re.findall(r"(\d{1,3}(?:\.\d{1,3}){3}):(\d+)", line)
+        if len(pairs) < 2:
             continue
-        dest_ip, dest_port = m.group(1), int(m.group(2))
+        local_ip, local_port = pairs[0]  # noqa: F841 (local side, not used for alerts)
+        dest_ip, dest_port = pairs[1]
+        dest_port = int(dest_port)
         if is_private_or_loopback(dest_ip):
             continue
         owner = _process_owner(line)
