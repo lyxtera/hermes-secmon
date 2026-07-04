@@ -520,7 +520,7 @@ def _render_guidance(check_id: str, detail: dict[str, Any]) -> str:
 
 
 def format_audit_markdown(result: dict[str, Any]) -> str:
-    """Render audit result as clean Telegram markdown."""
+    """Render audit result as compact, scannable format for Telegram."""
     lines: list[str] = []
 
     score = result.get("total_score", 0)
@@ -535,38 +535,37 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
     # ── Header ──────────────────────────────────────────────
     lines.append("🔍 **Secmon Audit**")
     lines.append("")
-
-    # ── Compact severity bar ───────────────────────────────
-    # Shows only non-zero severities inline with labels
-    bar_parts = []
+    
+    # Compact summary in one line
+    summary = []
     if crit:
-        bar_parts.append(f"🔴 **CRIT** {crit}")
+        summary.append(f"🔴{crit}")
     if high:
-        bar_parts.append(f"🟠 **HIGH** {high}")
+        summary.append(f"🟠{high}")
     if med:
-        bar_parts.append(f"🟡 **MED** {med}")
+        summary.append(f"🟡{med}")
     if low:
-        bar_parts.append(f"🔵 **LOW** {low}")
-    bar_parts.append(f"Σ **{total}**  risk **{score}**")
-    lines.append("  ·  ".join(bar_parts))
+        summary.append(f"🔵{low}")
+    summary.append(f"Σ{total} risk{score}")
+    lines.append(" | ".join(summary))
     lines.append("")
 
     if not all_findings:
-        lines.append("✅  System clean — no findings.")
+        lines.append("✅ System clean — no findings.")
         lines.append("")
         lines.append("`secmon --audit`")
         return "\n".join(lines)
 
-    # ── Findings by severity ───────────────────────────────
+    # ── Compact findings ───────────────────────────────────
     for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
         group = [f for f in all_findings if f["severity"] == severity]
         if not group:
             continue
+        
         emoji = SEVERITY_EMOJI.get(severity, "•")
-        label = severity.capitalize()
-        lines.append(f"**{emoji}  {label} — {len(group)}**")
+        lines.append(f"{emoji} **{severity.capitalize()} — {len(group)}**")
         lines.append("")
-
+        
         for f in group:
             check_id = f.get("check_id", "")
             msg = f.get("message", "")
@@ -574,36 +573,35 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
             detail = f.get("detail", {}) or {}
 
             cid_emoji = CHECK_ID_EMOJI.get(check_id, "•")
-            layer_name = LAYER_NAMES.get(layer, f"L{layer}")
-            explanation = CHECK_ID_EXPLANATIONS.get(check_id, "")
-
-            # Finding title
-            lines.append(f"• {cid_emoji}  **{msg}**")
-            lines.append("")
-
-            # Short explanation as blockquote
-            if explanation:
-                lines.append(f"> _{explanation}_")
-                lines.append("")
-
-            # Badge line: check_id + layer
-            lines.append(f"`{check_id}`  ·  {layer_name}")
-            lines.append("")
-
-            # Detail fields — compact single-line where possible
-            if detail:
-                detail_lines = _format_details_telegram(detail)
-                lines.extend(detail_lines)
-                lines.append("")
-
+            
+            # Line 1: emoji + truncated message
+            short_msg = msg[:60] + "..." if len(msg) > 60 else msg
+            lines.append(f"• {cid_emoji} {short_msg}")
+            
+            # Line 2: metadata + action in one compact line
+            metadata_parts = [f"`{check_id}`", LAYER_NAMES.get(layer, f"L{layer}")]
+            
+            # Add one key detail if present
+            path = detail.get("path") or detail.get("exe")
+            pid = detail.get("pid") or detail.get("parent_pid")
+            if path:
+                path_str = path if len(path) <= 30 else "..." + path[-27:]
+                metadata_parts.append(f"`{path_str}`")
+            elif pid:
+                metadata_parts.append(f"PID `{pid}`")
+            
+            lines.append(" · ".join(metadata_parts))
+            
+            # Line 3: shortened action (one line only)
             guidance = _render_guidance(check_id, detail)
-            lines.append(f"▶ {guidance}")
+            if guidance and not guidance.endswith("secmon"):
+                action = guidance.split(" — ")[-1] if " — " in guidance else guidance
+                if len(action) > 70:
+                    action = action[:67] + "..."
+                lines.append(f"▶ {action}")
+            
             lines.append("")
-
-            # Visual separator between findings
-            lines.append(FINDING_DIVIDER)
-            lines.append("")
-
+        
         lines.append("")
 
     lines.append("`secmon --audit`")
