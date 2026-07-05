@@ -33,7 +33,7 @@ if [[ -z "${OUT}" ]]; then
   exit 0
 fi
 
-echo "## 📅 Secmon Daily Digest"
+echo "**📅 Secmon Daily Digest**"
 echo "*$(_timestamp_utc)*"
 echo ""
 echo "${OUT}"

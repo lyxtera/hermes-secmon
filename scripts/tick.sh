@@ -30,7 +30,7 @@ _emit_tick_remediation() {
   local cta=""
 
   echo ""
-  echo "### 🛠️ What to do"
+  echo "> *🛠️ What to do*"
   echo ""
 
   if [[ "${out}" == *"permissions too open"* ]]; then
@@ -115,8 +115,8 @@ if [[ -z "${OUT}" ]]; then
   exit 0
 fi
 
-echo "## 🔔 Secmon Tick"
-echo "*$(_timestamp_utc)*"
+echo "*🔔 Secmon Tick*"
+echo "_$(_timestamp_utc)_"
 echo ""
 echo "${OUT}"
 _emit_tick_remediation "${OUT}"
