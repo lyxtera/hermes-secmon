@@ -30,7 +30,19 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             findings.append(
                 AuditFinding("HIGH", 2, "new_listen_port", f"New listening port: {port}")
             )
+    # Check if the known process was a transient browser/agent (ephemeral ports)
+    import re as _re
+    transients = cfg.get("whitelist", {}).get("port_removed_processes", [])
+    port_removed_ignore = set(cfg.get("whitelist", {}).get("port_removed", []))
     for port in set(map(int, known_ports)) - set(current_ports):
+        if port in port_removed_ignore:
+            continue
+        # Skip if the original process was a known transient
+        if transients:
+            line = known_ports.get(str(port), "")
+            m = _re.search(r'"([^"]+)"', line)
+            if m and m.group(1) in transients:
+                continue
         findings.append(
             AuditFinding("HIGH", 2, "port_removed", f"Listening port removed: {port}")
         )
