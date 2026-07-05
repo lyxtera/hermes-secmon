@@ -88,17 +88,18 @@ def format_status(state: dict, cfg: dict, metrics: dict[str, int] | None = None)
 
 
 def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: int = 0) -> str:
-    """Render daily digest as Telegram-optimized MarkdownV2."""
+    """Render daily digest as compact Telegram format."""
     lines: list[str] = []
     baselines = state.get("baselines", {})
 
     elevated_ctas: list[str] = []
 
-    # Header
-    lines.append("*📅 Daily Security Digest*")
+    lines.append("**📅 Daily Security Digest**")
     lines.append("")
-    lines.append("*📊 24h Activity*")
+    lines.append("**📊 24h Activity**")
     lines.append("")
+    lines.append("| Metric | Value | Baseline | Δ |")
+    lines.append("| :---: | :---: | :---: | :---: |")
 
     for key in METRIC_KEYS:
         val = metrics.get(key, 0)
@@ -111,23 +112,22 @@ def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: in
             delta = val - mean
             stdev = bl.get("stdev", 0)
             if delta > stdev * 2:
-                delta_str = f"⠠️ {delta:+d}"
+                delta_str = f"⚠️ {delta:+d}"
                 if key in METRIC_GUIDANCE:
-                    elevated_ctas.append(f"{label} is elevated — {METRIC_GUIDANCE[key]}")
+                    elevated_ctas.append(f"**{label}** is elevated — {METRIC_GUIDANCE[key]}")
             elif delta < -stdev * 2:
                 delta_str = f"✅ {delta:+d}"
             else:
                 delta_str = f"{delta:+d}"
-            lines.append(f"*{label}*  `{val:,}`  baseline `{mean:.0f}`  {delta_str}")
+            val_str = f"`{val:,}`"
+            bl_str = f"`{mean:.0f}`"
+            lines.append(f"| **{label}** | {val_str} | {bl_str} | {delta_str} |")
         else:
-            lines.append(f"*{label}*  `{val:,}`")
+            lines.append(f"| **{label}** | `{val:,}` | — | — |")
 
-        if impact:
-            lines.append(f"_{impact}_")
         lines.append("")
 
-    # Summary
-    lines.append("*🔍 Summary*")
+    lines.append("**🔍 Summary**")
     lines.append("")
     lines.append(f"• SSH failures: `{metrics.get('ssh_failed_24h', 0):,}`")
     lines.append(f"• Invalid users: `{metrics.get('ssh_invalid_user_24h', 0):,}`")
@@ -141,21 +141,20 @@ def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: in
     lines.append(f"• Findings: `{findings_count}`")
     lines.append("")
 
-    # Anomalies
     recent = state.get("last_anomalies", [])[-5:]
     if recent:
-        lines.append("*🚨 Recent Anomalies*")
+        lines.append("**🚨 Recent Anomalies**")
         lines.append("")
         for a in recent:
             sev = a.get("severity", "INFO")
             metric = a.get("metric", "?")
             direction = a.get("direction", "?")
             emoji = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡" if sev == "MEDIUM" else "ℹ️"
-            lines.append(f"• {emoji} *{sev}*: {metric} {direction}")
+            lines.append(f"• {emoji} **{sev}**: {metric} {direction}")
         lines.append("")
 
     if elevated_ctas:
-        lines.append("*▶ What to check*")
+        lines.append("**▶ What to check**")
         lines.append("")
         for cta in elevated_ctas[:5]:
             lines.append(f"• ℹ️ {cta}")
@@ -522,11 +521,7 @@ def _render_guidance(check_id: str, detail: dict[str, Any]) -> str:
 
 
 def format_audit_markdown(result: dict[str, Any]) -> str:
-    """Render audit result as Telegram-optimized MarkdownV2.
-    
-    Telegram supports: *bold* _italic_ `code` [text](url) ||spoiler||
-    NO tables, NO headings, NO task lists.
-    """
+    """Render audit result with tables for agent-delivered Telegram."""
     lines: list[str] = []
 
     score = result.get("total_score", 0)
@@ -538,41 +533,37 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
 
     all_findings = result.get("findings", [])
 
-    # ── Header ──────────────────────────────────────────────
-    lines.append("*🔍 Secmon Audit*")
+    lines.append("🔍 **Secmon Audit**")
     lines.append("")
 
-    # ── Compact summary bar ───────────────────────────────
     parts = []
     if crit:
-        parts.append(f"🔴 *{crit}*")
+        parts.append(f"🔴 **{crit} CRIT**")
     if high:
-        parts.append(f"🟠 *{high}*")
+        parts.append(f"🟠 **{high} HIGH**")
     if med:
-        parts.append(f"🟡 *{med}*")
+        parts.append(f"🟡 **{med} MED**")
     if low:
-        parts.append(f"🔵 *{low}*")
-    parts.append(f"Σ *{total}* risk *{score}*")
-    lines.append("  |  ".join(parts))
+        parts.append(f"🔵 **{low} LOW**")
+    parts.append(f"Σ **{total}** risk **{score}**")
+    lines.append(" · ".join(parts))
     lines.append("")
 
     if not all_findings:
-        lines.append("✅ *System clean* — no findings.")
+        lines.append("✅ **System clean** — no findings.")
         lines.append("")
         lines.append("`secmon --audit`")
         return "\n".join(lines)
 
-    # ── Findings by severity ───────────────────────────────
+    lines.append("| Finding | Check | Layer | Action |")
+    lines.append("| :---: | :--- | :--- | :--- |")
+
     for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
         group = [f for f in all_findings if f["severity"] == severity]
         if not group:
             continue
         
         emoji = SEVERITY_EMOJI.get(severity, "•")
-        
-        # Severity header
-        lines.append(f"{emoji} *{severity.capitalize()} — {len(group)}*")
-        lines.append("")
         
         for f in group:
             check_id = f.get("check_id", "")
@@ -582,33 +573,32 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
             cid_emoji = CHECK_ID_EMOJI.get(check_id, "•")
             layer_name = LAYER_NAMES.get(layer, f"L{layer}")
             
-            # Finding title (truncate to 70 chars)
-            short_msg = msg[:67] + "..." if len(msg) > 70 else msg
-            lines.append(f"• {cid_emoji} *{short_msg}*")
+            short_msg = msg[:40] + "..." if len(msg) > 40 else msg
             
-            # Metadata line: check_id, layer, key detail
-            meta = [f"`{check_id}`", layer_name]
+            meta = []
             path = detail.get("path") or detail.get("exe")
             pid = detail.get("pid") or detail.get("parent_pid")
             if path:
-                p = path if len(path) <= 35 else "..." + path[-32:]
+                p = path if len(path) <= 25 else "..." + path[-22:]
                 meta.append(f"`{p}`")
             elif pid:
                 meta.append(f"PID `{pid}`")
-            lines.append("  ·  ".join(meta))
             
-            # Short action (truncate to 80 chars)
+            finding_cell = f"{emoji} **{short_msg}**"
+            check_cell = f"{cid_emoji} `{check_id}`"
+            detail_cell = layer_name + (" · " + " · ".join(meta) if meta else "")
+            
             guidance = _render_guidance(check_id, detail)
+            action = ""
             if guidance and not guidance.endswith("secmon"):
                 action = guidance.split(" — ")[-1] if " — " in guidance else guidance
-                if len(action) > 80:
-                    action = action[:77] + "..."
-                lines.append(f"▶ {action}")
+            if not action:
+                action = "`secmon --audit`"
             
-            lines.append("")
+            lines.append(f"| {finding_cell} | {check_cell} | {detail_cell} | {action} |")
         
         lines.append("")
-    
+
     lines.append("`secmon --audit`")
     return "\n".join(lines)
 
