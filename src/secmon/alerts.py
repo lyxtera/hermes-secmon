@@ -154,7 +154,7 @@ def _stdout_context_suffix(alert: Alert) -> str:
 
         explanation = CHECK_ID_EXPLANATIONS.get(check_id, "")
         if explanation:
-            return f" — _{explanation}_"
+            return f"\n> _{explanation}_"
     return ""
 
 
@@ -228,6 +228,7 @@ def dispatch(
 
     Hermes Cron no-agent jobs capture stdout and deliver via the Gateway.
     Empty stdout on a clean tick means no notification is sent.
+    Uses Telegram MarkdownV2: *bold* _italic_ `code` [links](url) ||spoiler||
     """
     new_alerts: list[Alert] = []
     for alert in alerts:
@@ -241,10 +242,11 @@ def dispatch(
             emoji = SEVERITY_EMOJI.get(a.severity, "•")
             label = _stdout_source_label(a)
             context = _stdout_context_suffix(a)
+            hint = _stdout_remediation_hint(a)
             print(
-                f"{emoji} **{a.severity}** — {label}: "
+                f"{emoji} *{a.severity}* — {label}: "
                 f"{sanitize_message(a.message)}"
                 f"{context}"
-                f"{_stdout_remediation_hint(a)}"
+                f"{hint}"
             )
     return new_alerts
