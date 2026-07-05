@@ -80,7 +80,15 @@ def _collect_persistence_entries() -> dict[str, str]:
         entries["atq"] = hashlib.sha256(atq.encode()).hexdigest()
     timers = run_cmd_safe(["systemctl", "list-timers", "--all", "--no-pager"])
     if timers.strip():
-        entries["systemd_timers"] = hashlib.sha256(timers.encode()).hexdigest()
+        # Strip dynamic columns (NEXT, LEFT, LAST, PASSED) — only hash stable UNIT + ACTIVATES
+        stable = set()
+        for line in timers.splitlines():
+            if line.strip() and not line.startswith("NEXT"):
+                parts = line.rsplit(None, 2)  # split from right: UNIT | ACTIVATES
+                if len(parts) >= 2:
+                    stable.add(f"{parts[-2]} {parts[-1]}")
+        hash_input = "\n".join(sorted(stable))
+        entries["systemd_timers"] = hashlib.sha256(hash_input.encode()).hexdigest()
     for override in glob.glob("/etc/systemd/system/**/*.d/*.conf", recursive=True):
         if os.path.isfile(override):
             digest = _file_hash(override)
@@ -237,7 +245,8 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             fp = os.path.join(scan, fname)
             try:
                 if os.path.isfile(fp) and datetime.fromtimestamp(os.path.getmtime(fp)) > cutoff:
-                    dpkg = run_cmd_safe(["dpkg", "-S", fp])
+                    real_fp = os.path.realpath(fp)
+                    dpkg = run_cmd_safe(["dpkg", "-S", real_fp])
                     if not dpkg:
                         findings.append(
                             AuditFinding("HIGH", 6, "modified_bin", f"Recent binary not in dpkg: {fp}")
