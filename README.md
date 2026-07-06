@@ -142,13 +142,13 @@ See [`cron/jobs.yaml`](cron/jobs.yaml) for job definitions. Example:
 DELIVER=telegram   # or discord, slack, etc.
 
 hermes cron add "*/15 * * * *" --no-agent \
-  --script secmon/tick.sh --name secmon-tick --deliver "${DELIVER}"
+  --script secmon/tick.py --name secmon-tick --deliver "${DELIVER}"
 
 hermes cron add "0 */6 * * *" --no-agent \
-  --script secmon/audit.sh --name secmon-audit --deliver "${DELIVER}"
+  --script secmon/audit.py --name secmon-audit --deliver "${DELIVER}"
 
 hermes cron add "0 8 * * *" --no-agent \
-  --script secmon/daily.sh --name secmon-daily --deliver "${DELIVER}"
+  --script secmon/daily.py --name secmon-daily --deliver "${DELIVER}"
 ```
 
 Hermes Cron no-agent mode runs the script on schedule and delivers stdout verbatim via the Gateway. Empty stdout on a clean tick = silent (no notification).
@@ -195,7 +195,7 @@ A `pre_llm_call` hook injects a short security context summary (last audit score
 
 Notifications are **not** sent via webhooks. Instead:
 
-1. Hermes Cron runs a no-agent script (`secmon/tick.sh`, `secmon/audit.sh`, `secmon/daily.sh` under `~/.hermes/scripts/`)
+1. Hermes Cron runs a no-agent script (`secmon/tick.py`, `secmon/audit.py`, `secmon/daily.py` under `~/.hermes/scripts/`)
 2. The script invokes `secmon` and prints structured output to stdout
 3. The Hermes Gateway delivers stdout to the configured platform
 
@@ -342,9 +342,9 @@ security-audit/
 ├── scripts/
 │   ├── install.sh              # Symlink installer + Hermes registration
 │   ├── uninstall.sh            # Reversible uninstall
-│   ├── tick.sh                 # Hermes cron wrapper (15 min)
-│   ├── audit.sh                # Hermes cron wrapper (6 h)
-│   └── daily.sh                # Hermes cron wrapper (daily)
+│   ├── tick.py                 # Hermes cron delivery script (15 min)
+│   ├── audit.py                # Hermes cron delivery script (6 h)
+│   └── daily.py                # Hermes cron delivery script (daily)
 ├── SECURITY-AUDIT-SPEC.MD        # Full build specification
 ├── src/
 │   ├── secmon/                 # Core monitoring engine

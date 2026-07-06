@@ -13,12 +13,12 @@ if [[ ! -d "${SOURCE}/scripts" ]]; then
 fi
 
 mkdir -p "${SCRIPTS_DIR}"
-cp "${SOURCE}/scripts/tick.sh"   "${SCRIPTS_DIR}/tick.sh"
-cp "${SOURCE}/scripts/audit.sh"  "${SCRIPTS_DIR}/audit.sh"
-cp "${SOURCE}/scripts/daily.sh"  "${SCRIPTS_DIR}/daily.sh"
-chmod +x "${SCRIPTS_DIR}"/*.sh
+cp "${SOURCE}/scripts/tick.py"  "${SCRIPTS_DIR}/tick.py"
+cp "${SOURCE}/scripts/audit.py" "${SCRIPTS_DIR}/audit.py"
+cp "${SOURCE}/scripts/daily.py" "${SCRIPTS_DIR}/daily.py"
+chmod +x "${SCRIPTS_DIR}"/*.py
 
 echo "Synced secmon cron scripts to ${SCRIPTS_DIR}/"
-echo "  tick.sh  → ${SCRIPTS_DIR}/tick.sh"
-echo "  audit.sh → ${SCRIPTS_DIR}/audit.sh"
-echo "  daily.sh → ${SCRIPTS_DIR}/daily.sh"
+echo "  tick.py  → ${SCRIPTS_DIR}/tick.py"
+echo "  audit.py → ${SCRIPTS_DIR}/audit.py"
+echo "  daily.py → ${SCRIPTS_DIR}/daily.py"

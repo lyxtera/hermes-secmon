@@ -108,9 +108,9 @@ echo "==> Installing CLI symlink ${CLI_PATH}"
 mkdir -p "$(dirname "${CLI_PATH}")"
 ln -sfn "${VENV_DIR}/bin/secmon" "${CLI_PATH}"
 
-chmod +x "${SOURCE_DIR}/scripts/tick.sh" \
-  "${SOURCE_DIR}/scripts/audit.sh" \
-  "${SOURCE_DIR}/scripts/daily.sh"
+chmod +x "${SOURCE_DIR}/scripts/tick.py" \
+  "${SOURCE_DIR}/scripts/audit.py" \
+  "${SOURCE_DIR}/scripts/daily.py"
 
 if [[ ! -e "${CONFIG_FILE}" ]]; then
   # Handle dangling symlink (cp cannot write "through" it).
@@ -151,17 +151,17 @@ if command -v hermes >/dev/null 2>&1; then
     echo "==> Registering Hermes cron jobs (no-agent mode)"
 
     # Hermes cron requires --script to be relative to ~/.hermes/scripts/.
-    # Copy wrappers there (symlinks won't work — cron resolves real paths
+    # Copy delivery scripts there (symlinks won't work — cron resolves real paths
     # and blocks paths outside the scripts directory). After git pull,
     # re-run install.sh or manually copy the updated scripts.
     HERMES_SCRIPTS_DIR="${HOME}/.hermes/scripts/secmon"
     mkdir -p "${HERMES_SCRIPTS_DIR}"
-    cp "${SOURCE_DIR}/scripts/tick.sh" "${HERMES_SCRIPTS_DIR}/tick.sh"
-    cp "${SOURCE_DIR}/scripts/audit.sh" "${HERMES_SCRIPTS_DIR}/audit.sh"
-    cp "${SOURCE_DIR}/scripts/daily.sh" "${HERMES_SCRIPTS_DIR}/daily.sh"
-    chmod +x "${HERMES_SCRIPTS_DIR}/tick.sh" \
-      "${HERMES_SCRIPTS_DIR}/audit.sh" \
-      "${HERMES_SCRIPTS_DIR}/daily.sh"
+    cp "${SOURCE_DIR}/scripts/tick.py" "${HERMES_SCRIPTS_DIR}/tick.py"
+    cp "${SOURCE_DIR}/scripts/audit.py" "${HERMES_SCRIPTS_DIR}/audit.py"
+    cp "${SOURCE_DIR}/scripts/daily.py" "${HERMES_SCRIPTS_DIR}/daily.py"
+    chmod +x "${HERMES_SCRIPTS_DIR}/tick.py" \
+      "${HERMES_SCRIPTS_DIR}/audit.py" \
+      "${HERMES_SCRIPTS_DIR}/daily.py"
 
     register_cron_job() {
       local name="$1"
@@ -180,9 +180,9 @@ if command -v hermes >/dev/null 2>&1; then
       }
     }
 
-    register_cron_job "secmon-tick" "*/15 * * * *" "secmon/tick.sh"
-    register_cron_job "secmon-audit" "0 */6 * * *" "secmon/audit.sh"
-    register_cron_job "secmon-daily" "0 8 * * *" "secmon/daily.sh"
+    register_cron_job "secmon-tick" "*/15 * * * *" "secmon/tick.py"
+    register_cron_job "secmon-audit" "0 */6 * * *" "secmon/audit.py"
+    register_cron_job "secmon-daily" "0 8 * * *" "secmon/daily.py"
   fi
 else
   echo "==> Hermes CLI not found — skipping plugin enable and cron registration"
