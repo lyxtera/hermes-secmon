@@ -297,6 +297,8 @@ Secmon scanners are intentionally aggressive. Use these config options in `white
 | `whitelist.hidden_tmp_entries` | Ignore known hidden files in `/tmp` (VNC X11 sockets) | `[".font-unix", ".XIM-unix"]` |
 | `whitelist.tmpfs_mounts` | Expected tmpfs mounts (systemd `/var/tmp`) | `["/var/tmp"]` |
 | `whitelist.secret_exclude_paths` | Skip operational config files in secret pattern scan | `["/root/.hermes/config.yaml"]` |
+| `whitelist.port_removed` | Suppress port-removed alerts for specific ports | `[80, 443]` |
+| `whitelist.port_removed_processes` | Suppress port-removed alerts when process is a known transient (e.g. ephemeral browser/agent ports) | `["firefox", "hermes"]` |
 | `whitelist.proc_hollow_exclude_pids` | Exclude specific PIDs from anonymous mapping checks | `[449]` |
 | `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node"]` |
 | `whitelist.persist_exclude_prefixes` | Ignore secmon/hermes own systemd units in persistence diff | `["/etc/systemd/system/secmon-"]` |
