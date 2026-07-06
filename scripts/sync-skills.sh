@@ -3,7 +3,7 @@
 # then commit + push any changes.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${HOME}/.hermes/plugins/secmon"
 SKILLS_SRC="${HOME}/.hermes/skills/devops"
 SKILLS_DST="${REPO_ROOT}/skills"
 
