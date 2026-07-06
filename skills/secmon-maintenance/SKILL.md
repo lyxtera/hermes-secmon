@@ -90,9 +90,13 @@ When a script sends via `sendRichMessage` (Pipeline C), it needs:
 | `~/hermes/plugins/secmon/scripts/audit.py` | Source (git-tracked) |
 | `~/hermes/plugins/secmon/scripts/daily.py` | Source (git-tracked) |
 | `~/hermes/plugins/secmon/scripts/tick.py` | Source (git-tracked) |
+| `~/hermes/plugins/secmon/scripts/sync-skills.sh` | Sync agent-updated skills → repo (cron-fed) |
 | `~/.hermes/scripts/secmon/{audit,daily,tick}.py` | Deployed copy (not git-tracked) |
+| `~/.hermes/scripts/secmon/sync-skills.sh` | Deployed sync script |
 | `~/hermes/plugins/secmon/scripts/install.sh` | Deploys scripts + registers cron |
 | `~/hermes/plugins/secmon/scripts/sync-cron.sh` | Re-deploys after git pull |
+| `~/hermes/plugins/secmon/skills/` | Bundled skills source (git-tracked) |
+| `~/.hermes/skills/devops/{hermes-secmon,secmon-maintenance,secmon-audit-output-tuning}/` | Deployed skills (agent-editable, auto-indexed) |
 
 ## Important User Rule — Commit Discipline
 
@@ -404,14 +408,37 @@ def register(ctx):
 | Git tracking | Separate from plugin repo | In the plugin repo |
 | Deployment | Needs install/deploy step | Ships with the plugin |
 
-### When to use this for secmon
+### Live skills bundled in secmon
 
-Good candidates for bundled skills:
-- **`secmon:secmon-maintenance`** — maintain and tune secmon (this skill, now bundled)
-- **`secmon:secmon-audit-output-tuning`** — audit report severity filtering and Telegram table formatting
-- **`secmon:hermes-secmon`** — secmon overview and architecture reference
+Three skills are now bundled in the plugin repo and deployed to `~/.hermes/skills/devops/`:
 
-The old `shutil.copy2` pattern still works but is deprecated for new work. Prefer `ctx.register_skill()`.
+| Skill | Namespaced access | Purpose |
+|-------|------------------|---------|
+| `hermes-secmon` | `secmon:hermes-secmon` | Secmon overview, architecture, 19 reference files, 4 scripts |
+| `secmon-maintenance` | `secmon:secmon-maintenance` | This skill — alert investigation, false positive triage |
+| `secmon-audit-output-tuning` | `secmon:secmon-audit-output-tuning` | Audit report severity filtering and Telegram formatting |
+
+### Dual-lifecycle: agent edits + git sync
+
+```
+  Agent creates/updates skill       Sync cron (every 6h)
+  via skill_manage()                copies changes back
+         │                                │
+         ▼                                ▼
+  ~/.hermes/skills/devops/  ──────►  Plugin repo skills/
+  (auto-indexed, curator     rsync    (git add + commit + push)
+   tracks usage)                      ▲
+                                      │
+                               install.sh deploys
+                               skills on first install
+```
+
+**How it works:**
+- Skills live in both `~/.hermes/skills/devops/` (agent-accessible, auto-indexed) AND the plugin repo `skills/` (git-tracked)
+- The `secmon-skills-sync` cron job (every 6h, `secmon/sync-skills.sh`) copies any agent-made changes back to the plugin repo, commits, and pushes
+- Plugin's `ctx.register_skill()` exposes them as `secmon:<name>` for namespaced access
+- When loaded, a bundle context banner lists sibling skills from the same plugin
+- After `git pull` on the plugin repo, re-run `install.sh` or manually run `sync-skills.sh` to update `~/.hermes/skills/devops/`
 
 ## Common False Positive Scenarios
 
