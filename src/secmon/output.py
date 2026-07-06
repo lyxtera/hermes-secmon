@@ -529,7 +529,7 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
     crit = result.get("critical_count", 0)
     high = result.get("high_count", 0)
     med = sum(1 for f in result.get("findings", []) if f["severity"] == "MEDIUM")
-    low = sum(1 for f in result.get("findings", []) if f["severity"] in ("LOW", "INFO"))
+    low = sum(1 for f in result.get("findings", []) if f["severity"] == "LOW")
 
     all_findings = result.get("findings", [])
 
@@ -558,7 +558,7 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
     lines.append("| Finding | Check | Layer | Action |")
     lines.append("| :---: | :--- | :--- | :--- |")
 
-    for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+    for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
         group = [f for f in all_findings if f["severity"] == severity]
         if not group:
             continue
