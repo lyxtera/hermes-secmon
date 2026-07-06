@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from secmon_plugin import schemas, tools
 
 
 def register(ctx: Any) -> None:
-    """Wire secmon tools, hooks, and slash commands into Hermes."""
+    """Wire secmon tools, hooks, slash commands, and bundled skills into Hermes."""
+
+    # Register bundled skills — loaded as secmon:<name> via skill_view()
+    skills_dir = Path(__file__).parent / "skills"
+    if skills_dir.is_dir():
+        for child in sorted(skills_dir.iterdir()):
+            skill_md = child / "SKILL.md"
+            if child.is_dir() and skill_md.exists():
+                ctx.register_skill(child.name, skill_md)
 
     for name, schema, handler, description in tools.TOOL_DEFINITIONS:
         ctx.register_tool(

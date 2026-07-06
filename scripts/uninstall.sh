@@ -47,7 +47,7 @@ fi
 
 if command -v hermes >/dev/null 2>&1; then
   echo "==> Removing Hermes cron jobs"
-  for job in secmon-tick secmon-audit secmon-daily; do
+  for job in secmon-tick secmon-audit secmon-daily secmon-skills-sync; do
     hermes cron remove "${job}" 2>/dev/null || true
   done
   echo "==> Disabling Hermes plugin"
@@ -56,6 +56,12 @@ if command -v hermes >/dev/null 2>&1; then
   # Remove Hermes wrapper scripts we installed (if present).
   HERMES_SCRIPTS_DIR="${HOME}/.hermes/scripts/secmon"
   rm -rf "${HERMES_SCRIPTS_DIR}" 2>/dev/null || true
+
+  # Remove bundled skills deployed to ~/.hermes/skills/devops/
+  HERMES_SKILLS_DIR="${HOME}/.hermes/skills/devops"
+  for skill in hermes-secmon secmon-maintenance secmon-audit-output-tuning; do
+    rm -rf "${HERMES_SKILLS_DIR}/${skill}" 2>/dev/null || true
+  done
 else
   echo "==> Hermes CLI not found — skip cron/plugin cleanup"
 fi

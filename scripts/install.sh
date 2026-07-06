@@ -163,6 +163,27 @@ if command -v hermes >/dev/null 2>&1; then
       "${HERMES_SCRIPTS_DIR}/audit.py" \
       "${HERMES_SCRIPTS_DIR}/daily.py"
 
+    # Deploy sync-cron helper
+    cp "${SOURCE_DIR}/scripts/sync-cron.sh" "${HERMES_SCRIPTS_DIR}/sync-cron.sh"
+    chmod +x "${HERMES_SCRIPTS_DIR}/sync-cron.sh"
+
+    echo "==> Deploying bundled skills to ~/.hermes/skills/devops/"
+    HERMES_SKILLS_DIR="${HOME}/.hermes/skills/devops"
+    mkdir -p "${HERMES_SKILLS_DIR}"
+    for skill in hermes-secmon secmon-maintenance secmon-audit-output-tuning; do
+      if [[ -d "${SOURCE_DIR}/skills/${skill}" ]]; then
+        rm -rf "${HERMES_SKILLS_DIR}/${skill}"
+        cp -r "${SOURCE_DIR}/skills/${skill}" "${HERMES_SKILLS_DIR}/${skill}"
+        echo "    ${skill}: deployed"
+      fi
+    done
+
+    # Deploy sync-skills helper
+    HERMES_SYNC_SCRIPT="${HOME}/.hermes/scripts/secmon/sync-skills.sh"
+    cp "${SOURCE_DIR}/scripts/sync-skills.sh" "${HERMES_SYNC_SCRIPT}"
+    chmod +x "${HERMES_SYNC_SCRIPT}"
+    echo "    sync-skills.sh: deployed"
+
     register_cron_job() {
       local name="$1"
       local schedule="$2"
@@ -183,6 +204,7 @@ if command -v hermes >/dev/null 2>&1; then
     register_cron_job "secmon-tick" "*/15 * * * *" "secmon/tick.py"
     register_cron_job "secmon-audit" "0 */6 * * *" "secmon/audit.py"
     register_cron_job "secmon-daily" "0 8 * * *" "secmon/daily.py"
+    register_cron_job "secmon-skills-sync" "0 */6 * * *" "secmon/sync-skills.sh"
   fi
 else
   echo "==> Hermes CLI not found — skipping plugin enable and cron registration"

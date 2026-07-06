@@ -191,6 +191,37 @@ Slash commands:
 
 A `pre_llm_call` hook injects a short security context summary (last audit score, open findings, baseline status) into each agent turn.
 
+## Bundled Skills
+
+The secmon plugin ships **3 bundled skills** that provide agent-facing knowledge about secmon. They're deployed to `~/.hermes/skills/devops/` during install and are also registered as plugin skills accessible via their namespaced form.
+
+| Skill | Namespaced access | Purpose |
+|-------|------------------|---------|
+| `hermes-secmon` | `secmon:hermes-secmon` | Secmon overview, architecture, and all reference docs |
+| `secmon-maintenance` | `secmon:secmon-maintenance` | Alert investigation, false positive triage, cron delivery lifecycle |
+| `secmon-audit-output-tuning` | `secmon:secmon-audit-output-tuning` | Audit report severity filtering and Telegram formatting |
+
+### Skill lifecycle
+
+```
+  Agent creates/updates skill       Sync cron (every 6h)
+  via skill_manage()                copies changes back
+         │                                │
+         ▼                                ▼
+  ~/.hermes/skills/devops/  ──────►  Plugin repo skills/
+  (auto-indexed, curator     sync     (git-tracked, pushed)
+   tracks usage)                      ▲
+                                     │
+                              install.sh deploys
+                              skills on first install
+```
+
+- **Agent edits** skills in `~/.hermes/skills/devops/` via `skill_manage()` — they're auto-indexed in the system prompt and tracked by the curator
+- **Sync cron** (`secmon-skills-sync`, every 6h) copies changes back to the plugin repo, commits, and pushes to GitHub
+- **Plugin registration** (`ctx.register_skill()`) also makes them accessible as `secmon:<name>` via `skill_view()`
+- **Install** deploys the initial copies from the plugin repo to `~/.hermes/skills/devops/`
+- **Uninstall** removes them from `~/.hermes/skills/devops/` and the sync cron job
+
 ## Gateway notifications
 
 Notifications are **not** sent via webhooks. Instead:
@@ -344,9 +375,21 @@ security-audit/
 ├── scripts/
 │   ├── install.sh              # Symlink installer + Hermes registration
 │   ├── uninstall.sh            # Reversible uninstall
+│   ├── sync-cron.sh            # Re-deploy cron delivery scripts after git pull
+│   ├── sync-skills.sh          # Sync agent-updated skills back to repo (cron-fed)
 │   ├── tick.py                 # Hermes cron delivery script (15 min)
 │   ├── audit.py                # Hermes cron delivery script (6 h)
 │   └── daily.py                # Hermes cron delivery script (daily)
+├── skills/                     # Bundled agent skills (auto-synced)
+│   ├── hermes-secmon/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   ├── secmon-maintenance/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── secmon-audit-output-tuning/
+│       ├── SKILL.md
+│       └── references/
 ├── SECURITY-AUDIT-SPEC.MD        # Full build specification
 ├── src/
 │   ├── secmon/                 # Core monitoring engine
