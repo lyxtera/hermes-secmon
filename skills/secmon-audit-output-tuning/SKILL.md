@@ -140,7 +140,10 @@ git push origin main
 
 The INFO findings come almost entirely from the trends layer (Layer 8). They report what changed since the last audit — new findings appeared, old ones resolved, or persistent ones remained. These are useful for change tracking but noise for a quick scan.
 
-## Pitfalls
+## References
+
+- `secmon:secmon-maintenance` — parent skill: alert investigation, false positive triage, BPF watcher management
+- Proposed new checks: `references/proposed-checks.md` — coverage gap analysis and remediation steps per severity
 
 - **The header counts must match the visible rows.** If you suppress INFO from the table but the header still says `🔵 3 LOW`, the user will ask why there are 3 LOW rows but only 0 visible. Update both places.
 - **LOW and INFO are counted together** in `format_audit_markdown()` (`f["severity"] in ("LOW", "INFO")`). If you only want to suppress INFO but keep LOW, change the aggregate count to `"LOW"` only.

@@ -9,7 +9,9 @@ triggers:
   - unexpected SUID or similar secmon alerts
   - audit report review and findings triage
   - investigating port_removed / secret_pattern / persist_modified findings
-  - investigating NC-9-newprog bpf false positives (transient package installs)
+  - investigating NC-9-bpf-* watcher findings (persistent BPF programs)
+  - promoting known-good BPF programs to baseline
+  - configuring BPF watcher thresholds and systemd whitelist
   - applying security upgrades
   - config whitelist tuning (secret_exclude_paths, ignored_ports)
   - suppressing INFO/LOW findings from audit report output
@@ -443,32 +445,123 @@ Three skills are now bundled in the plugin repo and deployed to `~/.hermes/skill
 
 ## Common False Positive Scenarios
 
-### BPF Programs from Transient Package Installs
-**Symptom:** `New BPF program: 684` (NC-9-newprog) after installing/uninstalling Docker or other container runtimes.
+### BPF Watcher — Stable-Key Surveillance (replaces old NC-9-newprog)
 
-**Root cause:** Installing Docker triggers systemd to load cgroup BPF programs (`cgroup_skb` / `sd_fw_*`, `cgroup_device` / `sd_devices`) that persist in kernel memory — `apt purge` doesn't clear them. These are kernel-level artifacts, not files. The next audit compares current BPF IDs against the stored baseline and flags any new ones.
+**Context:** The old `NC-9-newprog` check flagged any new BPF program by numeric ID as HIGH immediately — false positive on every transient package install (Docker, Podman, any runtime that triggers systemd cgroup BPFs). **Replaced by a stable-key watcher** in commit `d5f665a` (47 files, 2647 insertions).
 
-**Key insight — self-resolving:** The secmon baseline auto-updates in `process.py` line 144 after each audit. New BPF programs are absorbed after one cycle — finding disappears on the *next* audit without any config or code change.
+**Architecture:** The watcher lives in `src/secmon/bpf/` with these modules:
 
-**Three-resolution ladder (pick one):**
-1. **Do nothing:** Wait one audit cycle — next run absorbs them into baseline. Self-resolved by design.
-2. **Reset BPF baseline immediately** (after uninstalling the runtime):
-   ```bash
-   python3 -c "
-   import json
-   s = json.load(open('/var/lib/secmon/state.json'))
-   s.get('audit_baseline', {}).pop('bpf_programs', None)
-   json.dump(s, open('/var/lib/secmon/state.json', 'w'))
-   "
-   ```
-3. **Reboot:** Clears all BPF programs from kernel memory; systemd reloads only its own. Overkill unless you're debugging.
+| Module | Role |
+|--------|------|
+| `collector.py` | Full BPF inventory via `bpftool -j prog/map/link/cgroup/net show` |
+| `identity.py` | Stable keys: `prog:{type}:{tag}:{xlated_sha256}:{attach_fp}` — survives reboots |
+| `classifier.py` | Risk scoring + systemd whitelist matching |
+| `provenance.py` | /proc forensics on the loader PID (exe, dpkg owner, systemd unit, capabilities, parent chain) |
+| `models.py` | WatchState FSM + data classes |
+| `watchlist.py` | State persistence (baseline, watchlist) |
+| `watcher.py` | Refresh + escalation loop |
+| `audit.py` | Integration with `--audit` mode |
+| `auditd.py` | Optional auditd bridge for `bpf()` syscall monitoring |
 
-**Distinction from other false positives:**
-- SUID: filesystem-level, needs whitelist entry
-- Port removed: process-level, needs process-name whitelisting
-- BPF programs: kernel artifacts, self-resolving via baseline auto-update
+**Stable Identity:** Programs identified by `prog:{type}:{tag}:{xlated_sha256}:{attach_fingerprint}` instead of numeric IDs. Same program after a reboot reuses the same stable key. Maps use `map:{type}:{name}:{key_size}:{value_size}:{max_entries}:{flags}:{btf_hash}`.
 
-**Pitfall:** The uninstall script should reset BPF baseline as a post-install step if the user wants zero false positives on the next audit cycle.
+**State Machine (WatchState):**
+
+```
+  IGNORED  ── systemd whitelist match (name + type + attach + loader)
+  BASELINE_MATCH  ── known in baseline (promoted)
+  SURVEILLANCE  ── new, score < 70, first seen
+  ALERT_HIGH  ── score >= 70 (persistent or suspicious loader)
+  ALERT_CRITICAL  ── score >= 100
+  VANISHED  ── program disappeared since last scan
+```
+
+**Scoring factors (classifier.py):**
+- **Loader risk** (+40 from /tmp, +30 (deleted) exe, +20 not in dpkg, +25 root without systemd unit, +35 suspicious comm)
+- **Program type risk** (+40 for kprobe/lsm/fentry/raw_tracepoint/struct_ops)
+- **Attach risk** (+50–60 for security_*, commit_creds, execve, vfs_read/write patterns)
+- **Map type risk** (+30 for prog_array/ringbuf/sockmap/devmap/xskmap)
+
+**Escalation:** Findings only emitted on *state transitions* — `SURVEILLANCE → ALERT_HIGH`, `SURVEILLANCE → ALERT_CRITICAL` — not on every audit cycle. Suppresses repeat alerts. A program that stays in SURVEILLANCE at low score sits forever, silent.
+
+**Systemd whitelist (hardcoded in classifier.py):** `sd_fw_ingress`, `sd_fw_egress`, `sd_devices` are auto-`IGNORED` when all four conditions match: program name, prog_type (`cgroup_skb` / `cgroup_device`), attach type (`cgroup_ingress`/`cgroup_egress`/`cgroup_device`), and loader path (`/usr/lib/systemd/systemd`). Config in `/etc/secmon/config.yaml` provides `bpf.systemd_loader_paths` and `bpf.systemd_cgroup_prefixes` for the loader-match check.
+
+**New CLI modes:**
+
+| Command | Purpose |
+|---------|---------|
+| `secmon --bpf-watch` | Refresh watchlist + emit escalation alerts (standalone, no full audit) |
+| `secmon --bpf-baseline list` | Show all promoted baseline entries |
+| `secmon --bpf-baseline promote --key <stable_key>` | Promote a watchlist entry to baseline (permanently ignored) |
+| `secmon --bpf-watchlist list` | Show current watchlist with states, scores, metadata |
+| `secmon --bpf-watchlist clear --key <stable_key>` | Remove a watchlist entry (doesn't promote to baseline) |
+
+**New check IDs:**
+
+| Check ID | Severity | When |
+|----------|----------|------|
+| `NC-9-bpf-surveillance-started` | INFO | New BPF program entered watchlist (first observation) |
+| `NC-9-bpf-critical-program` | CRITICAL | Program escalated to ALERT_CRITICAL (score ≥ 100) |
+| `NC-9-bpf-high-risk-program` | HIGH | Program escalated to ALERT_HIGH (score ≥ 70) |
+| `NC-9-bpf-high-risk-map` | HIGH | Map escalated to ALERT_HIGH |
+| `NC-9-bpf-monitoring-gap` | HIGH | auditd lost/backlog counter increased |
+| `NC-9-bpf-link-updated` | HIGH | BPF link attachment changed for a watched program |
+| `NC-9-bpf-pinned-persistence` | MEDIUM | New pinned path detected for a watched program |
+| `NC-9-bpf-loader-suspicious` | HIGH | Loader changed to suspicious path for a watched program |
+| `NC-9-bpf-map-mutated` | HIGH | Watched map metadata changed (max_entries, flags, FD holders) |
+
+**First-time setup — promote known systemd BPF programs:**
+
+After a fresh `--audit` or `--bpf-watch`, systemd's `sd_devices` and `sd_fw_ingress`/`sd_fw_egress` may land in SURVEILLANCE (risk_score 0, never alerting). This happens when `bpftool` reports no FD holder PIDs, so loader provenance is empty and the systemd whitelist can't fully match. Promote them to baseline to clean the watchlist:
+
+```bash
+# 1. List the watchlist to see what's there
+secmon --bpf-watchlist list
+
+# 2. Run bpf-watch once to populate state
+secmon --bpf-watch
+
+# 3. Promote each known-good entry by stable key
+secmon --bpf-baseline promote --key "prog:cgroup_device:...:<attach_fp>"
+secmon --bpf-baseline promote --key "prog:cgroup_skb:...:<attach_fp>"
+
+# 4. Verify
+secmon --bpf-watchlist list   # should be empty
+secmon --bpf-baseline list    # shows promoted entries
+```
+
+**Config reference (`/etc/secmon/config.yaml`):**
+
+```yaml
+bpf:
+  systemd_loader_paths:
+    - "/usr/lib/systemd/systemd"
+    - "/lib/systemd/systemd"
+  systemd_cgroup_prefixes:
+    - "/system.slice"
+```
+
+**Optional: auditd integration for BPF syscall monitoring:**
+
+```bash
+apt install auditd
+systemctl enable --now auditd
+# install.sh already places /etc/audit/rules.d/secmon-bpf.rules
+augenrules --load
+```
+
+This enables `NC-9-bpf-monitoring-gap` detection. Without auditd, the gap check always passes (no false positives).
+
+**How the Docker scenario plays out (before vs after):**
+
+| Phase | Old behavior (removed) | New watcher |
+|-------|----------------------|-------------|
+| Docker install triggers systemd cgroup BPFs | HIGH immediately via NC-9-newprog | Enters SURVEILLANCE at score 0 — silent |
+| Next audit while Docker still running | HIGH again (new ID each time?) | Still SURVEILLANCE — same stable key |
+| Docker uninstall, BPFs cleaned up | HIGH on first audit (new non-baseline IDs) | Watchlist entry → VANISHED — absorbed, no alert |
+| Permanent systemd programs | Repeated HIGH until baseline absorbs | Promoted to baseline once, IGNORED forever |
+
+**New check IDs reference:** See `references/bpf-watcher.md` for a comprehensive listing of all BPF check IDs, their triggers, severities, and the corresponding classifier rules.
 
 ### Port Removed — Transient Hermes Browser Ports
 **Symptom:** `Listening port removed: 45123`, `Listening port removed: 39333`
@@ -542,4 +635,5 @@ if transients:
 - State location: `/var/lib/secmon/state.json`
 - Install script: `~/.hermes/plugins/secmon/scripts/install.sh`
 - Alert tuning reference: `references/alert-tuning.md` — SUID whitelist, threshold tuning, stale cache fixes
-- Audit findings triage: `references/audit-findings-triage.md` — port_removed, secret_pattern, persist_modified, sec_updates, sysctl, NC-9-newprog BPF, and general triage workflow
+- Audit findings triage: `references/audit-findings-triage.md` — port_removed, secret_pattern, persist_modified, sec_updates, sysctl, and general triage workflow
+- BPF watcher reference: `references/bpf-watcher.md` — comprehensive check ID table, classifier rules, stable key format, state machine transitions
