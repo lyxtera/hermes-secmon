@@ -216,6 +216,8 @@ apt install -y debsums
 
 **Root cause:** Installing Docker (or any container runtime) triggers systemd to load cgroup BPF programs — specifically `cgroup_skb` (firewall, `sd_fw_egress`/`sd_fw_ingress`) and `cgroup_device` (device control, `sd_devices`) programs. These are **kernel-level artifacts**, not files — `apt purge` does not remove them. They persist in kernel memory until the cgroup hierarchy reorganizes or the system reboots.
 
+**Note:** This section applies to the **old** ID-based NC-9 check (pre-commit `d5f665a`). The new stable-key watcher replaces this pattern entirely — see `references/bpf-watcher-setup.md` for the current approach.
+
 **Verification:**
 ```bash
 # List all BPF programs, look for Docker/systemd cgroup programs
@@ -262,6 +264,84 @@ json.dump(s, open('/var/lib/secmon/state.json', 'w'))
 - SUID: filesystem-level, needs a whitelist entry
 - Port removed: process-level, needs process-name whitelisting
 - BPF programs: kernel-level artifacts, self-resolving via baseline auto-update
+
+## 9. hidden_tmp — Executable in /dev/shm or /tmp
+
+**Symptom:** `Hidden entry in /dev/shm: .bt`, `Hidden entry in /tmp: .something`
+
+**Root cause:** The file integrity layer scans `/tmp`, `/var/tmp`, and `/dev/shm` for hidden entries (names starting with `.`). These can be legitimate tools dropped into tmpfs by cron jobs, build scripts, or monitoring agents. A 2.4 MB ELF binary named `.bt` in `/dev/shm` is a compiled BPF tracing tool (links against libclang, uses BPF syscalls) — not inherently malicious but warrants investigation.
+
+**Verification:**
+```bash
+# Check the file type
+file /dev/shm/.bt
+
+# Check if it's currently running
+lsof /dev/shm/.bt
+
+# Get its hash for threat intel lookup
+sha256sum /dev/shm/.bt
+
+# Check what it does
+strings /dev/shm/.bt | grep -E "^/|^\.|secmon|trace|monitor|audit" | head -10
+```
+
+**Triage decision matrix:**
+
+| File type | In /dev/shm? | Running? | Action |
+|-----------|-------------|----------|--------|
+| ELF binary | Yes | No | Investigate once, then `rm` if legit |
+| ELF binary | Yes | Yes | Investigate immediately — could be persistence |
+| Shell script | Yes | No | Read it, then `rm` if benign |
+| Config/dotfile | Yes | N/A | Read it, whitelist if expected |
+| Systemd private dir | Yes | N/A | Auto-excluded by `systemd-private` check |
+
+**Fix:**
+
+If the file is harmless (e.g., a BPF tracing tool dropped by a package install script):
+```bash
+rm /dev/shm/.bt
+```
+
+If the file is expected and will reappear (e.g., a monitoring tool's temp file), add it to the whitelist:
+```yaml
+whitelist:
+  hidden_tmp_entries:
+    - .bt
+```
+
+**Pitfall:** Files in `/dev/shm` (tmpfs) disappear on reboot. If the file doesn't reappear after reboot, no whitelist is needed — the alert self-resolves after one audit cycle. Only whitelist if the file is regenerated persistently.
+
+## 10. secret_pattern — Hermes State Snapshot Backups
+
+**Symptom:** `Secret material pattern in /root/.hermes/state-snapshots/20260707-<timestamp>/config.yaml`
+
+**Root cause:** Hermes creates timestamped backup copies of its config at `state-snapshots/YYYYMMDD-HHMMSS-/` before applying updates. These contain the same API keys (`TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, etc.) as the live config, but are not excluded from secret scanning because the `state-snapshots/` prefix is not in `secret_exclude_paths`.
+
+**Verification:**
+```bash
+ls -la /root/.hermes/state-snapshots/
+```
+
+**Fix (two options):**
+
+**Option A — Add the prefix to exclude paths (preferred for permanent fix):**
+```yaml
+whitelist:
+  secret_exclude_paths:
+    - /root/.hermes/config.yaml
+    - /root/.hermes/.env
+    - /root/.hermes/state-snapshots
+```
+
+Note: The check uses `fp in exclude_paths` (exact match), so the prefix `/root/.hermes/state-snapshots` must match the start of each file path inside. Since these are flat files under the prefix, this works.
+
+**Option B — Delete stale snapshots (if you don't need restoration history):**
+```bash
+rm -rf /root/.hermes/state-snapshots/
+```
+
+**Pitfall:** New snapshots will be created on the next Hermes config update. Option A is the set-and-forget solution; Option B requires periodic cleanup.
 
 ## General Triage Workflow
 

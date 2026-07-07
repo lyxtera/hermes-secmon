@@ -159,10 +159,7 @@ When secmon triggers false positives (e.g., "Unexpected SUID" alerts):
 - Commit and push to public repo so all users benefit
 - Example: Adding missing paths to `DEBIAN_SUID_WHITELIST` in `file_integrity.py`
 
-**Config tuning (for thresholds):**
-- Edit `/etc/secmon/config.yaml`
-- Use `sudo` to edit (file is in protected system path)
-- Example: Increase `fail2ban_min_new_bans` from 5 to 50 for busy servers
+**Config tuning (for thresholds):**\n- Edit `~/.hermes/secmon/config.yaml` (no sudo needed — inside Hermes home, auto-backed up via `hermes backup`)\n- Config search path (priority order): `/etc/secmon/config.yaml` → `~/.hermes/secmon/config.yaml` → `config.yaml` (cwd)\n- If the old `/etc/` path exists it takes precedence — migrate to `~/.hermes/` for automatic backup coverage\n- Example: Increase `fail2ban_min_new_bans` from 5 to 50 for busy servers
 
 ### 4. Verify with User — Never Commit Until Confirmed ⚠️
 
@@ -530,7 +527,7 @@ secmon --bpf-watchlist list   # should be empty
 secmon --bpf-baseline list    # shows promoted entries
 ```
 
-**Config reference (`/etc/secmon/config.yaml`):**
+**Config reference (`~/.hermes/secmon/config.yaml`):**
 
 ```yaml
 bpf:
@@ -618,6 +615,43 @@ if transients:
 **Root cause:** `suid_cache` in state stored old values
 **Fix:** Run `sudo secmon --reset-baseline` or manually clear cache in `/var/lib/secmon/state.json`
 
+### Secret Pattern — Directory Prefix Exclusion Required
+**Symptom:** `secret_pattern` fires for files under an excluded directory (e.g., `/root/.hermes/state-snapshots/.../*.yaml`)
+**Root cause:** The `secret_exclude_paths` whitelist uses exact file path match (`if fp in exclude_paths`). Excluding a directory does NOT exclude files inside it — only the directory path itself matches.
+**Fix (patch threat_intel.py):** Replace the exact-match check with a prefix-matching helper:
+```python
+def _is_excluded(fp: str, exclude_paths: set[str]) -> bool:
+    if fp in exclude_paths:
+        return True
+    for ex in exclude_paths:
+        if fp.startswith(ex + "/") or fp.startswith(ex + os.sep):
+            return True
+    return False
+```
+Then change both exclusion lines in `_scan_secrets()` from `if fp in exclude_paths:` to `if _is_excluded(fp, exclude_paths):`. This makes excluding `/root/.hermes/state-snapshots` automatically cover everything under it.
+**Prevention:** When adding a directory to `secret_exclude_paths`, always verify it actually excludes subfiles by running `--audit` after the change.
+
+### Hidden tmp — BPF / Executable Investigation
+**Symptom:** `hidden_tmp` fires for a hidden entry in `/dev/shm` or `/tmp` (e.g., `.bt`)
+**Investigation pattern:**
+```bash
+# 1. Check file type and size
+file /dev/shm/.bt
+ls -la /dev/shm/.bt
+
+# 2. Check if currently running
+lsof /dev/shm/.bt
+ps aux | grep .bt
+
+# 3. Inspect strings for origin clues
+strings /dev/shm/.bt | grep -iE "version|build|gcc|clang|bpftrace|bpf" | head -10
+readelf -s /dev/shm/.bt 2>/dev/null | grep -E "main|bpf|trace|monitor" | head -10
+
+# 4. Check hash for known signatures
+sha256sum /dev/shm/.bt
+```
+**Assessment:** `.bt` files in `/dev/shm` are typically compiled BPF tracing tools (bpftrace, custom bpf tools) — 2.4 MB ELF, dynamic linked, references `libclang` and `bpf_*` syscall wrappers. If not currently running, it's likely a leftover from a previous experiment. Remove with `rm /dev/shm/.bt` and add to `hidden_tmp_entries` whitelist if it's expected to reappear.
+
 ## User Preferences
 
 - **Direct action** - Just do the fix, don't explain at length
@@ -631,7 +665,7 @@ if transients:
 
 - `secmon:secmon-audit-output-tuning` — sibling skill for audit report severity filtering and Telegram table formatting
 - Secmon repo: https://github.com/lyxtera/hermes-secmon
-- Config location: `/etc/secmon/config.yaml`
+- Config location: `~/.hermes/secmon/config.yaml` (auto-backed up via `hermes backup`; search fallback: `/etc/secmon/config.yaml`)
 - State location: `/var/lib/secmon/state.json`
 - Install script: `~/.hermes/plugins/secmon/scripts/install.sh`
 - Alert tuning reference: `references/alert-tuning.md` — SUID whitelist, threshold tuning, stale cache fixes
