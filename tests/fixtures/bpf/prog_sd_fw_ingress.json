@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "name": "sd_fw_ingress",
+    "type": "cgroup_skb",
+    "tag": "deadbeef",
+    "uid": 0,
+    "map_ids": [],
+    "pids": [1]
+  }
+]

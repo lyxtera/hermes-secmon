@@ -16,6 +16,13 @@ from secmon.modes.daily import run_daily
 from secmon.modes.detect_botnet import run_detect_botnet
 from secmon.modes.record import run_record
 from secmon.modes.status import run_status
+from secmon.modes.bpf import (
+    run_bpf_baseline_list,
+    run_bpf_baseline_promote,
+    run_bpf_watch_mode,
+    run_bpf_watchlist_clear,
+    run_bpf_watchlist_list,
+)
 from secmon.modes.tick import run_tick
 from secmon.output import format_status
 from secmon.state import load_state, save_state
@@ -47,6 +54,7 @@ def run_mode(mode: str, config_path: str | None = None) -> dict[str, Any]:
         "daily": run_daily,
         "detect-botnet": run_detect_botnet,
         "tick": run_tick,
+        "bpf-watch": run_bpf_watch_mode,
     }
     runner = runners.get(mode)
     if runner is None:
@@ -131,6 +139,12 @@ TOOL_DEFINITIONS: list[tuple[str, dict, Callable[[dict, Any], str], str]] = [
         SCHEMAS["secmon_detect_botnet"],
         _make_handler("detect-botnet"),
         "Run botnet /24 subnet analysis and automatic iptables blocking.",
+    ),
+    (
+        "secmon_bpf_watch",
+        SCHEMAS["secmon_bpf_watch"],
+        _make_handler("bpf-watch"),
+        "Refresh BPF watchlist and emit alerts on escalation.",
     ),
     (
         "secmon_remediate",

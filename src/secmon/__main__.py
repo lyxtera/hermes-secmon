@@ -16,6 +16,13 @@ from secmon.modes.daily import run_daily
 from secmon.modes.detect_botnet import run_detect_botnet
 from secmon.modes.status import run_status
 from secmon.modes.audit_mode import run_audit_mode
+from secmon.modes.bpf import (
+    run_bpf_baseline_list,
+    run_bpf_baseline_promote,
+    run_bpf_watch_mode,
+    run_bpf_watchlist_clear,
+    run_bpf_watchlist_list,
+)
 
 
 def _setup_logging(cfg: dict, verbose: bool) -> None:
@@ -36,6 +43,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detect-botnet", action="store_true", help="Botnet detection + blocking")
     parser.add_argument("--status", action="store_true", help="Show baselines and state")
     parser.add_argument("--audit", action="store_true", help="Full multi-layer audit (JSON)")
+    parser.add_argument("--bpf-watch", action="store_true", help="BPF watchlist refresh and escalation")
+    parser.add_argument(
+        "--bpf-baseline",
+        nargs="+",
+        metavar="ACTION",
+        help="BPF baseline: list | promote (with --key)",
+    )
+    parser.add_argument(
+        "--bpf-watchlist",
+        nargs="+",
+        metavar="ACTION",
+        help="BPF watchlist: list | clear (with --key)",
+    )
+    parser.add_argument("--key", dest="bpf_key", default=None, help="Stable key for BPF promote/clear")
     parser.add_argument("--config", dest="config_path", default=None, help="Config file path")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = parser.parse_args(argv)
@@ -48,10 +69,15 @@ def main(argv: list[str] | None = None) -> int:
         args.detect_botnet,
         args.status,
         args.audit,
+        args.bpf_watch,
+        bool(args.bpf_baseline),
+        bool(args.bpf_watchlist),
     ]
     if sum(bool(m) for m in modes) != 1:
-        parser.error("Specify exactly one mode: --tick, --check, --record, --daily, "
-                       "--detect-botnet, --status, or --audit")
+        parser.error(
+            "Specify exactly one mode: --tick, --check, --record, --daily, "
+            "--detect-botnet, --status, --audit, --bpf-watch, --bpf-baseline, or --bpf-watchlist"
+        )
 
     cfg = load_config(args.config_path)
     _setup_logging(cfg, args.verbose)
@@ -74,6 +100,26 @@ def main(argv: list[str] | None = None) -> int:
         return run_status(state, cfg)
     if args.audit:
         return run_audit_mode(state, cfg)
+    if args.bpf_watch:
+        return run_bpf_watch_mode(state, cfg)
+    if args.bpf_baseline:
+        action = args.bpf_baseline[0]
+        if action == "list":
+            return run_bpf_baseline_list(state, cfg)
+        if action == "promote":
+            if not args.bpf_key:
+                parser.error("--key required for --bpf-baseline promote")
+            return run_bpf_baseline_promote(state, cfg, args.bpf_key)
+        parser.error("Unknown --bpf-baseline action; use list or promote")
+    if args.bpf_watchlist:
+        action = args.bpf_watchlist[0]
+        if action == "list":
+            return run_bpf_watchlist_list(state, cfg)
+        if action == "clear":
+            if not args.bpf_key:
+                parser.error("--key required for --bpf-watchlist clear")
+            return run_bpf_watchlist_clear(state, cfg, args.bpf_key)
+        parser.error("Unknown --bpf-watchlist action; use list or clear")
     return 1
 
 

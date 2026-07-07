@@ -165,7 +165,7 @@ def test_main_tick(cfg, mock_commands, monkeypatch, tmp_path):
 @patch("secmon.audit.process.os.listdir")
 @patch("secmon.audit.process.os.readlink")
 @patch("secmon.audit.process.os.stat")
-def test_process_layer(mock_stat, mock_readlink, mock_listdir, cfg, state, mock_commands):
+def test_process_layer(mock_stat, mock_readlink, mock_listdir, cfg, state, mock_commands, mock_bpf_empty):
     mock_listdir.return_value = ["1", "2", "self"]
     mock_readlink.side_effect = OSError("no exe")
     mock_stat.side_effect = OSError("no stat")
@@ -175,7 +175,6 @@ def test_process_layer(mock_stat, mock_readlink, mock_listdir, cfg, state, mock_
     mock_commands(["cat", "/proc/mounts"], "proc /proc proc defaults 0 0\n")
     mock_commands(["sysctl", "-n", "kernel.unprivileged_bpf_disabled"], "1")
     mock_commands(["which", "bpftool"], "/usr/bin/bpftool")
-    mock_commands(["bpftool", "prog", "list"], "")
     findings = audit_process.run(state, cfg)
     assert isinstance(findings, list)
 

@@ -24,6 +24,8 @@ Options:
   --remove-botnet    Flush iptables BOTNET chain before exit
   --keep-source      Leave ${SOURCE_DIR} symlink in place
   -h, --help         Show this help
+
+Also removes /etc/audit/rules.d/secmon-bpf.rules when present (best-effort reload).
 EOF
 }
 
@@ -92,6 +94,15 @@ if [[ "${REMOVE_BOTNET}" -eq 1 ]]; then
   iptables -X BOTNET 2>/dev/null || true
   if command -v netfilter-persistent >/dev/null 2>&1; then
     netfilter-persistent save || true
+  fi
+fi
+
+BPF_RULES_DST="/etc/audit/rules.d/secmon-bpf.rules"
+if [[ -f "${BPF_RULES_DST}" ]]; then
+  echo "==> Removing BPF auditd rules ${BPF_RULES_DST}"
+  rm -f "${BPF_RULES_DST}"
+  if command -v augenrules >/dev/null 2>&1 && systemctl is-active auditd >/dev/null 2>&1; then
+    augenrules --load 2>/dev/null || echo "    Warning: augenrules --load failed (restart auditd manually)" >&2
   fi
 fi
 

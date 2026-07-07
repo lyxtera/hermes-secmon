@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger("secmon.shell")
 
@@ -55,3 +56,15 @@ def run_cmd_safe(args: list[str], *, timeout: int = 30, default: str = "") -> st
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         logger.debug("command error: %s — %s", " ".join(args), exc)
         return default
+
+
+def run_cmd_json(args: list[str], *, timeout: int = 30) -> dict[str, Any] | list[Any] | None:
+    """Run command and parse JSON stdout, or return None on failure."""
+    raw = run_cmd_safe(args, timeout=timeout, default="")
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.debug("invalid JSON from: %s", " ".join(args))
+        return None

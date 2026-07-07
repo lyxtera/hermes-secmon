@@ -24,6 +24,9 @@ def run_tick(state: dict, cfg: dict) -> int:
     metrics = collect_metrics_from_state(cfg, state)
     alerts = []
     alerts.extend(run_checks(state, cfg))
+    from secmon.bpf.watcher import run_bpf_watch
+
+    alerts.extend(findings_to_alerts(run_bpf_watch(state, cfg), min_severity="HIGH"))
     alerts.extend(detect_anomalies(metrics, state, cfg))
 
     ms = state.setdefault("monitor_state", {})

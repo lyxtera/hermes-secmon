@@ -135,6 +135,15 @@ def default_config() -> dict[str, Any]:
         "sysctl": {
             "expected_values": {},
         },
+        "bpf": {
+            "systemd_loader_paths": [
+                "/usr/lib/systemd/systemd",
+                "/lib/systemd/systemd",
+            ],
+            "systemd_cgroup_prefixes": [
+                "/system.slice",
+            ],
+        },
     }
 
 

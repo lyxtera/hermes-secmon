@@ -40,8 +40,16 @@ def test_corrupt_state_recovery(cfg, state_path, tmp_path):
 def test_migration_v1_to_v3():
     data = {"version": 1, "daily_stats": []}
     migrated = run_migrations(data)
-    assert migrated["version"] == 3
-    assert len(migrated["migration_history"]) == 2
+    assert migrated["version"] == CURRENT_VERSION
+    assert len(migrated["migration_history"]) == 3
+    assert "bpf" in migrated
+
+
+def test_migration_v3_includes_bpf():
+    data = {"version": 3, "daily_stats": []}
+    migrated = run_migrations(data)
+    assert migrated["version"] == CURRENT_VERSION
+    assert migrated["bpf"]["schema_version"] == 1
 
 
 def test_atomic_snapshot_prune(cfg, state, tmp_path):

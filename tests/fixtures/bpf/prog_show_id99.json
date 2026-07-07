@@ -1,0 +1,11 @@
+[
+  {
+    "id": 99,
+    "name": "test_prog",
+    "type": "tracepoint",
+    "tag": "abc123",
+    "uid": 0,
+    "map_ids": [10],
+    "pids": [1000]
+  }
+]

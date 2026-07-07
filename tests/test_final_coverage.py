@@ -89,9 +89,10 @@ def test_suggest_calibration_range(cfg, state):
 
 
 def test_migration_v0():
+    from secmon.state import CURRENT_VERSION
     data = {"version": 1, "daily_stats": []}
     m = run_migrations(data)
-    assert m["version"] == 3
+    assert m["version"] == CURRENT_VERSION
 
 
 def test_get_blocked_subnets_regex(cfg, mock_commands):

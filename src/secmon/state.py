@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from secmon.config import METRIC_KEYS, snapshot_dir, state_file_path
+from secmon.bpf.watchlist import default_bpf_state
 from secmon.utils import utcnow, utcnow_iso
 
 logger = logging.getLogger("secmon.state")
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def default_state() -> dict[str, Any]:
@@ -58,6 +59,7 @@ def default_state() -> dict[str, Any]:
         "metric_cache": {"timestamp": None, "values": {}},
         "last_audit_findings": [],
         "last_audit_score": 0,
+        "bpf": default_bpf_state(),
     }
 
 
@@ -89,12 +91,23 @@ def _migrate_v2_to_v3(data: dict) -> dict:
     return data
 
 
+def _migrate_v3_to_v4(data: dict) -> dict:
+    data.setdefault("bpf", default_bpf_state())
+    data["version"] = 4
+    data.setdefault("migration_history", []).append(
+        {"from_version": 3, "to_version": 4, "at": utcnow_iso()}
+    )
+    return data
+
+
 def run_migrations(data: dict) -> dict:
     version = data.get("version", 1)
     if version < 2:
         data = _migrate_v1_to_v2(data)
     if data.get("version", 2) < 3:
         data = _migrate_v2_to_v3(data)
+    if data.get("version", 3) < 4:
+        data = _migrate_v3_to_v4(data)
     return data
 
 

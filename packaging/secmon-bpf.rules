@@ -1,0 +1,2 @@
+-a always,exit -F arch=b64 -S bpf -k secmon-bpf
+-a always,exit -F arch=b32 -S bpf -k secmon-bpf

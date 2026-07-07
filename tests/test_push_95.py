@@ -12,7 +12,7 @@ from secmon.audit import logs, process, network, threat_intel, file_integrity
 from secmon.botnet import _persist_rules, ensure_botnet_chain
 from secmon.checks import run_checks
 from secmon.metrics import _collect_new_blocks
-from secmon.state import load_state, save_state, _prune_snapshots
+from secmon.state import CURRENT_VERSION, load_state, save_state, _prune_snapshots
 from secmon.utils import extract_ips, parse_iso, ip_in_prefixes
 
 
@@ -28,13 +28,25 @@ def test_process_hidden_and_bpf(cfg, state, mock_commands):
     mock_commands(["cat", "/proc/mounts"], "tmpfs /var/wrong tmpfs rw 0 0\n")
     mock_commands(["sysctl", "-n", "kernel.unprivileged_bpf_disabled"], "0")
     mock_commands(["which", "bpftool"], "/usr/bin/bpftool")
-    mock_commands(["bpftool", "prog", "list"], "99: x\n")
+    mock_commands(["cat", "/proc/sys/kernel/random/boot_id"], "boot\n")
+    mock_commands(["bpftool", "-j", "prog", "show"], '[{"id":99,"name":"x","type":"tracepoint","tag":"t","map_ids":[],"pids":[]}]')
+    mock_commands(["bpftool", "-j", "map", "show"], "[]")
+    mock_commands(["bpftool", "-j", "link", "show"], "[]")
+    mock_commands(["bpftool", "-j", "cgroup", "show", "/"], "{}")
+    mock_commands(["bpftool", "-j", "net", "show"], "{}")
+    mock_commands(["bpftool", "prog", "dump", "xlated", "id", "99"], "code\n")
+    mock_commands(["auditctl", "-s"], "lost 0\nbacklog 0\n")
     state["audit_baseline"]["bpf_programs"] = ["1"]
     with patch("os.listdir", side_effect=lambda p: ["1", "2"] if p == "/proc" else []):
         with patch("os.readlink", side_effect=lambda p: "/tmp/evil" if "/1/" in p else "/usr/bin/bash"):
-            with patch("builtins.open", side_effect=lambda p, *a, **k: io.StringIO("[kworker]\n")):
+            def _mock_open(path, *args, **kwargs):
+                if "cmdline" in str(path):
+                    return io.BytesIO(b"bash\x00")
+                return io.StringIO("[kworker]\n")
+            with patch("builtins.open", side_effect=_mock_open):
                 findings = process.run(state, cfg)
     assert len(findings) >= 1
+    assert not any(f.check_id == "NC-9-newprog" for f in findings)
 
 
 def test_network_port_baseline_changes(cfg, state, mock_commands):
@@ -116,7 +128,7 @@ def test_state_backup_corrupt(cfg, tmp_path):
     with open(sp, "w") as fh:
         fh.write("{bad")
     loaded = load_state(cfg)
-    assert loaded["version"] == 3
+    assert loaded["version"] == CURRENT_VERSION
 
 
 def test_checks_init_logs_exception(cfg, state, monkeypatch):

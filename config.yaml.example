@@ -101,5 +101,12 @@ sysctl:
   expected_values:
     kernel.kptr_restrict: ["1", "2"]   # 2 is actually stricter than 1
 
+bpf:
+  systemd_loader_paths:
+    - "/usr/lib/systemd/systemd"
+    - "/lib/systemd/systemd"
+  systemd_cgroup_prefixes:
+    - "/system.slice"
+
 metrics:
   overrides: {}

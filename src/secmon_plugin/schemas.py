@@ -89,6 +89,20 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "required": [],
         },
     },
+    "secmon_bpf_watch": {
+        "name": "secmon_bpf_watch",
+        "description": "Refresh BPF watchlist and emit alerts on escalation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "config_path": {
+                    "type": "string",
+                    "description": "Optional path to secmon config YAML.",
+                }
+            },
+            "required": [],
+        },
+    },
     "secmon_remediate": {
         "name": "secmon_remediate",
         "description": "Apply safe, operator-guided remediation actions for known security monitor self-protection issues.",

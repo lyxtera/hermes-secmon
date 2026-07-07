@@ -1,0 +1,11 @@
+[
+  {
+    "id": 30,
+    "name": "jump_table",
+    "type": "prog_array",
+    "key_size": 4,
+    "value_size": 4,
+    "max_entries": 16,
+    "flags": 0
+  }
+]

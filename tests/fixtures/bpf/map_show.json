@@ -1,0 +1,11 @@
+[
+  {
+    "id": 10,
+    "name": "test_map",
+    "type": "hash",
+    "key_size": 4,
+    "value_size": 8,
+    "max_entries": 1024,
+    "flags": 0
+  }
+]

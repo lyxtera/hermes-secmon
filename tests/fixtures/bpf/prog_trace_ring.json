@@ -1,0 +1,11 @@
+[
+  {
+    "id": 4,
+    "name": "trace_ring",
+    "type": "tracepoint",
+    "tag": "feedface",
+    "uid": 0,
+    "map_ids": [20],
+    "pids": [4000]
+  }
+]

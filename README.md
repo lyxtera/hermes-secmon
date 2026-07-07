@@ -6,16 +6,17 @@ Designed to run as root on a single VPS. Silent when normal — output appears o
 
 ## Features
 
-- **Hermes plugin integration** — seven LLM-callable tools, `/secmon` and `/secmon_remediate` slash commands, and `pre_llm_call` security context injection
+- **Hermes plugin integration** — eight LLM-callable tools, `/secmon` and `/secmon_remediate` slash commands, and `pre_llm_call` security context injection
 - **Hermes Gateway notifications** — cron jobs capture script stdout and deliver to Telegram, Discord, Slack, and other configured platforms
 - **Hermes Cron scheduling** — no-agent watchdog jobs for tick (15 min), audit (6 h), and daily digest (08:00 UTC)
 - **11 metrics** — SSH failures, attacker IPs/subnets, fail2ban bans, botnet rules, kernel errors, listening ports, and more
 - **9 realtime threat checks** — self-protection, brute-force bursts, new fail2ban bans, port changes, unauthorized SSH sessions, suspicious/C2 outbound connections, etc.
 - **Audit-to-alert bridge** — CRITICAL/HIGH deep-audit findings dispatched through the same dedup/log/stdout pipeline
-- **Advanced compromise detection** — process hollowing, persistence baseline diff, process lineage, secret exposure, eBPF/kernel tamper
+- **Advanced compromise detection** — process hollowing, persistence baseline diff, process lineage, secret exposure, eBPF delta watcher, kernel tamper
 - **Two-gate anomaly detection** — sigma threshold + minimum absolute delta with rolling baselines (Bessel's correction)
 - **8+ audit layers** — file integrity, network, process, auth, logs, threat intel, compliance, trends
-- **11 extended checks (NC-1–NC-11)** — Docker privilege escalation, DNS integrity, eBPF, supply chain, log gaps, and more
+- **11 extended checks (NC-1–NC-11)** — Docker privilege escalation, DNS integrity, supply chain, log gaps, and more
+- **BPF delta watcher (NC-9)** — stable-key surveillance for eBPF programs/maps; watchlist + risk scoring; alerts on escalation only
 - **Botnet /24 blocking** — automatic iptables BOTNET chain with whitelist enforcement
 - **Structured JSON-line logging** — alert deduplication with local log retention
 
@@ -33,7 +34,8 @@ Designed to run as root on a single VPS. Silent when normal — output appears o
 
 Optional tools (graceful degradation if missing):
 
-- `bpftool` — eBPF integrity checks (NC-9)
+- `bpftool` — eBPF delta watcher / NC-9 (JSON collection, stable keys, risk scoring)
+- `auditd` — optional bridge for short-lived `bpf()` syscalls (`/etc/audit/rules.d/secmon-bpf.rules`, installed by `install.sh`)
 - `debsums` — supply chain verification (NC-10)
 - `docker` — container escape detection (NC-1)
 
@@ -70,6 +72,7 @@ The installer will:
 4. Create `/etc/secmon`, `/var/lib/secmon`, log files with secure permissions
 5. Run `hermes plugins enable secmon` (when Hermes CLI is available)
 6. Register three Hermes Cron no-agent jobs (tick, audit, daily)
+7. Install BPF auditd rules to `/etc/audit/rules.d/secmon-bpf.rules` when `auditd` is present (best-effort `augenrules --load`)
 
 ### Manual installation
 
@@ -82,8 +85,8 @@ apt update
 apt install -y python3 python3-pip python3-venv \
   iptables fail2ban netfilter-persistent
 
-# Optional
-apt install -y bpftool debsums
+# Optional — eBPF watcher + supply chain
+apt install -y bpftool debsums auditd
 ```
 
 #### 2. Link the checkout (do not copy)
@@ -178,6 +181,7 @@ When enabled (`hermes plugins enable secmon`), the agent can call:
 | `secmon_record` | Collect metrics and append baseline sample |
 | `secmon_daily` | Human-readable daily security digest |
 | `secmon_detect_botnet` | Botnet /24 analysis and iptables blocking |
+| `secmon_bpf_watch` | Refresh BPF watchlist and emit escalation alerts |
 | `secmon_remediate` | Apply safe remediation actions (e.g. fix file permissions) |
 
 Slash commands:
@@ -278,7 +282,7 @@ Options:
 | `--remove-botnet` | Flush iptables BOTNET chain |
 | `--keep-source` | Leave `/opt/secmon` symlink in place |
 
-The uninstaller removes Hermes cron jobs (`secmon-tick`, `secmon-audit`, `secmon-daily`) and disables the plugin. The source checkout is **never deleted** unless you remove it yourself.
+The uninstaller removes Hermes cron jobs (`secmon-tick`, `secmon-audit`, `secmon-daily`), disables the plugin, and removes `/etc/audit/rules.d/secmon-bpf.rules` when present. The source checkout is **never deleted** unless you remove it yourself.
 
 ## Usage
 
@@ -286,13 +290,18 @@ Exactly one mode per CLI invocation:
 
 | Mode | Command | Description |
 |------|---------|-------------|
-| Tick | `secmon --tick` | Primary cron entry: metrics, checks, anomalies, botnet, daily digest |
+| Tick | `secmon --tick` | Primary cron entry: metrics, checks, anomalies, BPF watcher, botnet, daily digest |
 | Check | `secmon --check` | Threat checks + anomaly detection only |
 | Record | `secmon --record` | Collect metrics and append baseline sample |
 | Daily | `secmon --daily` | Human-readable daily security digest |
 | Botnet | `secmon --detect-botnet` | Standalone /24 subnet analysis and blocking |
 | Status | `secmon --status` | Show baselines, state, and current metrics |
-| Audit | `secmon --audit` | Full multi-layer forensic audit (JSON to stdout) |
+| Audit | `secmon --audit` | Full multi-layer forensic audit (markdown to stdout) |
+| BPF watch | `secmon --bpf-watch` | Refresh BPF watchlist; dispatch HIGH+ escalation alerts |
+| BPF baseline | `secmon --bpf-baseline list` | List manually promoted BPF baseline keys (JSON) |
+| BPF baseline | `secmon --bpf-baseline promote --key <stable_key>` | Promote a watchlist entry to baseline |
+| BPF watchlist | `secmon --bpf-watchlist list` | List active BPF surveillance entries (JSON) |
+| BPF watchlist | `secmon --bpf-watchlist clear --key <stable_key>` | Remove a watchlist entry |
 
 Global options:
 
@@ -341,6 +350,34 @@ Secmon scanners are intentionally aggressive. Use these config options in `white
 | `sysctl.expected_values` | Accept multiple valid sysctl values (e.g. `kptr_restrict=1` or `2`) | `kernel.kptr_restrict: ["1", "2"]` |
 
 These are **per-design** overrides — they let you tune for your environment without forking the scanner logic. All defaults are conservative (maximum alerts).
+
+### BPF delta watcher (NC-9)
+
+The BPF watcher runs on every `--tick` (15 min) and during `--audit`. Unknown low-risk eBPF objects enter a **watchlist**; alerts fire only on risk escalation or suspicious changes (new links, pins, loader swaps).
+
+```yaml
+bpf:
+  systemd_loader_paths:
+    - "/usr/lib/systemd/systemd"
+    - "/lib/systemd/systemd"
+  systemd_cgroup_prefixes:
+    - "/system.slice"
+```
+
+**Stable keys** (not BPF IDs) identify programs and maps across reloads. Promote trusted objects manually after verification:
+
+```bash
+secmon --bpf-watchlist list
+secmon --bpf-baseline promote --key 'prog:tracepoint:...'
+```
+
+High-risk types (lsm, kprobe, fentry, raw_tracepoint, struct_ops) and programs using `prog_array` maps **cannot** be promoted.
+
+Install/deploy audit rules for short-lived BPF loads (done automatically by `install.sh` when `auditd` is present):
+
+```text
+/etc/audit/rules.d/secmon-bpf.rules
+```
 
 #### Outbound destination whitelist
 
@@ -391,11 +428,14 @@ security-audit/
 │       ├── SKILL.md
 │       └── references/
 ├── SECURITY-AUDIT-SPEC.MD        # Full build specification
+├── packaging/
+│   └── secmon-bpf.rules        # auditd rules for bpf() syscall monitoring
 ├── src/
 │   ├── secmon/                 # Core monitoring engine
+│   │   ├── bpf/                # BPF delta watcher (NC-9): collector, classifier, watchlist
 │   │   ├── checks/             # Realtime threat checks
 │   │   ├── audit/              # 8 forensic audit layers + NC-1–NC-11
-│   │   └── modes/              # CLI mode handlers
+│   │   └── modes/              # CLI mode handlers (incl. bpf baseline/watchlist)
 │   └── secmon_plugin/          # Hermes plugin (register, tools, schemas)
 └── tests/                      # Test suite (95%+ coverage)
 ```
@@ -435,15 +475,20 @@ hermes plugins enable secmon
 8. Review `/var/log/security-monitor.log` for false positives; tune thresholds
 9. Ensure fail2ban sshd jail is active: `fail2ban-client status sshd`
 10. Confirm iptables BOTNET chain exists after first botnet run: `iptables -L BOTNET -n`
+11. Optional: `apt install auditd && systemctl enable --now auditd` for BPF syscall monitoring
+12. After first audit: review `secmon --bpf-watchlist list`; promote expected systemd BPF with `--bpf-baseline promote`
 
 ## Logs and state
 
 | Path | Purpose |
 |------|---------|
-| `/var/lib/secmon/state.json` | Canonical state (baselines, dedup, audit baselines) |
+| `/var/lib/secmon/state.json` | Canonical state (metric baselines, dedup, audit baselines, `bpf` watchlist) |
 | `/var/lib/secmon/snapshots/` | Daily state snapshots (7-day retention) |
 | `/var/log/security-monitor.log` | Structured JSON-line event log |
 | `/var/log/secmon-botnet.log` | Botnet /24 block actions |
+| `/etc/audit/rules.d/secmon-bpf.rules` | auditd rules for `bpf()` syscall monitoring (optional) |
+
+State schema version is **4** (includes `state.bpf` block with baseline, watchlist, and `last_scan` audit counters). Legacy `audit_baseline.bpf_programs` ID lists are unused by the delta watcher.
 
 To restore state from a snapshot, copy a snapshot file back to `state.json`.
 

@@ -40,6 +40,11 @@ def cfg(tmp_data_dir, tmp_path):
                 "cooldown_minutes": 60,
             },
             "dns": {"expected_nameservers": ["8.8.8.8"]},
+            "realtime": {"fail2ban_min_new_bans": 1},
+            "suspicious_ports": {
+                "ranges": [[6660, 6700]],
+                "specific": [4444, 5555, 8080, 9090, 2222],
+            },
         }
     )
 
@@ -83,6 +88,24 @@ def mock_commands():
     set_runner(runner)
     yield set_response
     set_runner(None)
+
+
+@pytest.fixture
+def mock_bpf_empty(mock_commands):
+    """Stub bpftool JSON pipeline with no programs/maps."""
+
+    def _apply():
+        mock_commands(["which", "bpftool"], "/usr/sbin/bpftool")
+        mock_commands(["cat", "/proc/sys/kernel/random/boot_id"], "boot-test\n")
+        mock_commands(["bpftool", "-j", "prog", "show"], "[]")
+        mock_commands(["bpftool", "-j", "map", "show"], "[]")
+        mock_commands(["bpftool", "-j", "link", "show"], "[]")
+        mock_commands(["bpftool", "-j", "cgroup", "show", "/"], "{}")
+        mock_commands(["bpftool", "-j", "net", "show"], "{}")
+        mock_commands(["auditctl", "-s"], "lost 0\nbacklog 0\n")
+
+    _apply()
+    return _apply
 
 
 @pytest.fixture

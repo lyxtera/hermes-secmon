@@ -142,7 +142,7 @@ def test_logs_exhaustive(cfg, state, mock_commands):
     assert len(findings) >= 2
 
 
-def test_process_bpf_and_mounts(cfg, state, mock_commands):
+def test_process_bpf_and_mounts(cfg, state, mock_commands, mock_bpf_empty):
     mock_commands(["ps", "-eo", "pid="], "1\n2\n")
     mock_commands(["lsmod"], "rootkit 1 0\n")
     mock_commands(["docker", "ps", "--format", "{{.ID}}"], "")
@@ -150,10 +150,15 @@ def test_process_bpf_and_mounts(cfg, state, mock_commands):
                   "tmpfs /var/evil tmpfs rw 0 0\nproc /proc proc rw 0 0\n")
     mock_commands(["sysctl", "-n", "kernel.unprivileged_bpf_disabled"], "0")
     mock_commands(["which", "bpftool"], "/usr/sbin/bpftool")
-    mock_commands(["bpftool", "prog", "list"], "42: tracepoint\n")
+    mock_commands(["bpftool", "-j", "prog", "show"], '[{"id":42,"name":"tp","type":"tracepoint","tag":"t","map_ids":[],"pids":[]}]')
+    mock_commands(["bpftool", "prog", "dump", "xlated", "id", "42"], "xlated\n")
     with patch("os.listdir", return_value=["1", "2"]):
         with patch("os.readlink", side_effect=lambda p: "/tmp/[kworker]" if "1" in p else "/usr/bin/bash"):
-            with patch("builtins.open", mock_open(read_data="kworker\n")):
+            def _mock_open(path, *args, **kwargs):
+                if "cmdline" in str(path):
+                    return io.BytesIO(b"kworker\x00")
+                return io.StringIO("kworker\n")
+            with patch("builtins.open", side_effect=_mock_open):
                 findings = process.run(state, cfg)
     assert len(findings) >= 2
 

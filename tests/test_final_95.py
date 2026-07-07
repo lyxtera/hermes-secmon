@@ -70,27 +70,27 @@ def test_compliance_debsums_critical(cfg, state, mock_commands):
 def test_state_corrupt_backup_fails(cfg, tmp_path, monkeypatch):
     cfg["general"]["data_dir"] = str(tmp_path)
     from secmon.config import state_file_path
+    from secmon.state import CURRENT_VERSION, load_state
     sp = state_file_path(cfg)
     tmp_path.mkdir(parents=True, exist_ok=True)
     with open(sp, "w") as fh:
         fh.write("{bad")
     monkeypatch.setattr("secmon.state.shutil.copy2", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
-    from secmon.state import load_state
     loaded = load_state(cfg)
-    assert loaded["version"] == 3
+    assert loaded["version"] == CURRENT_VERSION
 
 
 def test_load_state_migrates_from_v1(cfg, tmp_path):
     import json
     cfg["general"]["data_dir"] = str(tmp_path)
     from secmon.config import state_file_path
-    from secmon.state import load_state
+    from secmon.state import CURRENT_VERSION, load_state
     sp = state_file_path(cfg)
     tmp_path.mkdir(parents=True, exist_ok=True)
     with open(sp, "w") as fh:
         json.dump({"version": 1, "daily_stats": []}, fh)
     data = load_state(cfg)
-    assert data["version"] == 3
+    assert data["version"] == CURRENT_VERSION
 
 
 def test_prune_snapshots_edge_cases(tmp_path, monkeypatch):

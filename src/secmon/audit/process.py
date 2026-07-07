@@ -7,6 +7,7 @@ import os
 import re
 
 from secmon.audit.base import AuditFinding
+from secmon.bpf.audit import bpftool_unpriv_check, run_bpf_audit
 from secmon.shell import run_cmd_safe
 
 WEB_PARENTS = ("nginx", "apache", "httpd", "php-fpm", "node", "python", "ruby")
@@ -123,25 +124,8 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                 )
 
     # NC-9: eBPF integrity
-    bpf_disabled = run_cmd_safe(["sysctl", "-n", "kernel.unprivileged_bpf_disabled"]).strip()
-    bpf_progs = run_cmd_safe(["bpftool", "prog", "list"])
-    if not bpf_progs and "bpftool" in str(run_cmd_safe(["which", "bpftool"])):
-        findings.append(AuditFinding("MEDIUM", 3, "NC-9-nobpf", "bpftool available but no programs"))
-    elif not run_cmd_safe(["which", "bpftool"]):
-        findings.append(AuditFinding("MEDIUM", 3, "NC-9-nobpftool", "bpftool not installed"))
-    if bpf_progs and bpf_disabled != "1":
-        findings.append(
-            AuditFinding("CRITICAL", 3, "NC-9-unpriv", "Unprivileged BPF enabled with programs loaded")
-        )
-    elif bpf_progs:
-        baseline_bpf = state.get("audit_baseline", {}).get("bpf_programs", [])
-        current_ids = re.findall(r"^(\d+):", bpf_progs, re.MULTILINE)
-        for pid in current_ids:
-            if baseline_bpf and pid not in baseline_bpf:
-                findings.append(
-                    AuditFinding("HIGH", 3, "NC-9-newprog", f"New BPF program: {pid}")
-                )
-        state.setdefault("audit_baseline", {})["bpf_programs"] = current_ids
+    findings.extend(bpftool_unpriv_check(state))
+    findings.extend(run_bpf_audit(state, cfg))
 
     # Process hollowing / code injection via /proc/*/maps
     exclude_pids: set[int] = set(cfg.get("whitelist", {}).get("proc_hollow_exclude_pids", []))
@@ -364,17 +348,5 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                     "Kernel module loading enabled with multiple modules loaded",
                 )
             )
-
-    # BPF maps baseline
-    bpf_maps = run_cmd_safe(["bpftool", "map", "list"])
-    if bpf_maps:
-        map_ids = re.findall(r"^(\d+):", bpf_maps, re.MULTILINE)
-        baseline_maps = ab.get("bpf_maps", [])
-        for mid in map_ids:
-            if baseline_maps and mid not in baseline_maps:
-                findings.append(
-                    AuditFinding("HIGH", 3, "NC-9-newmap", f"New BPF map: {mid}")
-                )
-        ab["bpf_maps"] = map_ids
 
     return findings

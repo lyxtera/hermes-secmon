@@ -80,6 +80,22 @@ chmod 700 "${DATA_DIR}"
 chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
 chmod 640 "${LOG_FILE}" "${BOTNET_LOG}" 2>/dev/null || true
 
+echo "==> Installing BPF auditd rules (best-effort)"
+BPF_RULES_SRC="${SOURCE_DIR}/packaging/secmon-bpf.rules"
+BPF_RULES_DST="/etc/audit/rules.d/secmon-bpf.rules"
+if [[ -f "${BPF_RULES_SRC}" ]] && [[ -d /etc/audit/rules.d ]]; then
+  cp "${BPF_RULES_SRC}" "${BPF_RULES_DST}"
+  chmod 640 "${BPF_RULES_DST}" 2>/dev/null || true
+  echo "    Installed ${BPF_RULES_DST}"
+  if command -v augenrules >/dev/null 2>&1 && systemctl is-active auditd >/dev/null 2>&1; then
+    augenrules --load 2>/dev/null || echo "    Warning: augenrules --load failed (restart auditd manually)" >&2
+  elif ! command -v auditctl >/dev/null 2>&1; then
+    echo "    Note: install auditd for short-lived BPF syscall monitoring (optional)" >&2
+  fi
+else
+  echo "    Skipped (rules source or /etc/audit/rules.d missing)"
+fi
+
 echo "==> Linking source checkout -> ${SOURCE_DIR}"
 mkdir -p "$(dirname "${SOURCE_DIR}")"
 if [[ "${SOURCE_DIR}" != "${REPO_ROOT}" ]]; then
@@ -224,6 +240,7 @@ Secmon installed successfully (Hermes Agent plugin).
   CLI:              ${CLI_PATH} -> $(readlink -f "${CLI_PATH}")
   Config:           ${CONFIG_FILE}
   State:            ${DATA_DIR}/state.json
+  BPF audit rules:  ${BPF_RULES_DST} (if auditd installed)
   Logs:             ${LOG_FILE}
   Plugin:           secmon (enable with: hermes plugins enable secmon)
 
@@ -233,6 +250,8 @@ Next steps:
   3. Ensure Hermes gateway is running: hermes gateway start
   4. Run: ${CLI_PATH} --record   (repeat over 24h+ for baselines)
   5. Review: ${LOG_FILE}
+  6. Optional: apt install auditd && systemctl enable --now auditd  (BPF syscall bridge)
+  7. After verifying expected BPF: ${CLI_PATH} --bpf-baseline promote --key <stable_key>
 
 To uninstall: sudo ${SOURCE_DIR}/scripts/uninstall.sh
 EOF

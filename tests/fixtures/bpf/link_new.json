@@ -1,0 +1,9 @@
+[
+  {
+    "id": 7,
+    "prog_id": 5,
+    "type": "cgroup",
+    "attach_type": "ingress",
+    "target_name": "/system.slice"
+  }
+]

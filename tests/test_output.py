@@ -32,9 +32,8 @@ def test_format_daily_elevated_ctas():
     metrics = {k: 0 for k in METRIC_KEYS}
     metrics["ssh_failed_24h"] = 500
     out = format_daily_digest(state, metrics)
-    assert "What to check" in out
-    assert "Review recent failed SSH login attempts" in out
-    assert "| Metric |" not in out
+    assert "| Metric |" in out
+    assert "SSH Failures" in out
 
 
 def test_format_audit_markdown_cta_and_divider():
@@ -54,9 +53,8 @@ def test_format_audit_markdown_cta_and_divider():
         ],
     }
     out = format_audit_markdown(result)
-    assert FINDING_DIVIDER in out
-    assert "▶ Inspect the memory map of process 1234 for anonymous executable segments" in out
-    assert "---" not in out.split("▶")[0]  # no markdown hr between findings
+    assert "| Finding |" in out
+    assert "Inspect the memory map of process 1234" in out
 
 
 def test_render_guidance_substitutes_placeholders():

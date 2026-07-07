@@ -218,8 +218,62 @@ State {
     timestamp: ISO8601,
     values: Map<String, Integer>
   }
+
+  // BPF delta watcher (schema_version 1 within state version 4+)
+  bpf: {
+    schema_version: Integer,
+    baseline: {
+      programs: Map<StableKey, { promoted_at: ISO8601, metadata: Object }>,
+      maps: Map<StableKey, { promoted_at: ISO8601, metadata: Object }>,
+      links: Map<StableKey, Object>
+    },
+    watchlist: {
+      programs: Map<StableKey, WatchlistEntry>,
+      maps: Map<StableKey, WatchlistEntry>
+    },
+    last_scan: {
+      time: ISO8601,
+      boot_id: String,
+      audit_lost: Integer,
+      audit_backlog: Integer
+    }
+  }
+}
+
+// WatchlistEntry (values in bpf.watchlist.programs / bpf.watchlist.maps)
+WatchlistEntry {
+  stable_key: String,
+  current_id: Integer,           // transient BPF ID (updated each scan)
+  state: String,                 // WatchState enum value
+  risk_score: Integer,
+  first_seen: ISO8601,
+  last_seen: ISO8601,
+  last_alert_state: String,      // dedup escalations
+  metadata: Object,              // full program/map snapshot
+  history: Array<{ at, from, to }>,
+  object_kind: String            // "program" | "map"
+}
+
+// Stable program key (primary):
+//   prog:<type>:<tag>:<xlated_sha256>:<attach_fingerprint>
+// Fallback (no xlated dump):
+//   prog:<type>:<tag>:<name>:<map_schema_hash>:<attach_fingerprint>
+// Stable map key:
+//   map:<type>:<name>:<key_size>:<value_size>:<max_entries>:<flags>:<btf_hash>
+```
+
+**State version:** `4` (adds `bpf` block via v3→v4 migration). Legacy `audit_baseline.bpf_programs` / `bpf_maps` ID lists are retained but no longer used for alerting.
+
+### 3.1.1 BPF configuration (`config.bpf`)
+
+```
+bpf: {
+  systemd_loader_paths: ["/usr/lib/systemd/systemd", "/lib/systemd/systemd"],
+  systemd_cgroup_prefixes: ["/system.slice"]
 }
 ```
+
+Systemd programs (`sd_fw_ingress`, `sd_fw_egress`, `sd_devices`) are whitelisted only when **all** conditions match: correct type, attach point, systemd loader, and expected cgroup prefix. Name alone is never sufficient.
 
 ### 3.2 Atomic Write Protocol
 
@@ -828,10 +882,13 @@ Alert on new, modified, or removed entries. Severity escalates for `/tmp` paths 
 #### Kernel / eBPF Tamper (extended NC-9)
 
 - Kernel tainted flag, sysctl relaxation (`modules_disabled`)
-- New BPF programs and maps vs baseline
+- BPF delta watcher: stable-key surveillance for programs, maps, and links (not transient BPF IDs)
 - Unprivileged BPF enabled with loaded programs
+- auditd bridge for short-lived `bpf()` syscall events (`secmon-bpf` key)
 
-**check_id:** `kernel_*`, `NC-9-*`
+**check_id:** `kernel_*`, `NC-9-*`, `NC-9-bpf-*`
+
+**BPF watcher states:** `ignored`, `baseline_match`, `surveillance`, `benign_candidate`, `vanished`, `alert_high`, `alert_critical`
 
 #### SSH Key Rotation Tracking
 
@@ -1456,26 +1513,68 @@ The following are **new checks** not present in the existing system. They addres
 
 ---
 
-#### NC-9: eBPF / BPF Program Integrity
+#### NC-9: eBPF / BPF Program Integrity (Delta Watcher)
 
 **Layer:** Process Forensics (3)
-**Severity:** CRITICAL
+**Module:** `src/secmon/bpf/` (invoked from `audit/process.py` and `--tick`)
+**Severity:** CRITICAL / HIGH / INFO (context-dependent)
 
 **What to check:**
-- List all loaded BPF programs (requires `bpftool`).
-- Check for BPF programs attached to security-relevant hooks (syscalls, network, cgroup).
-- Flag any BPF program not matching a known baseline.
-- Check if BPF is available but `kernel.unprivileged_bpf_disabled` is not set to 1.
+- Collect all loaded BPF programs, maps, and links via `bpftool -j` (never parse human-readable output).
+- Compute **stable identity keys** from type, tag, xlated bytecode hash, attach fingerprint, and map schema — not transient BPF IDs.
+- Classify each object: systemd hard whitelist, manual baseline match, surveillance, or immediate alert by risk score.
+- Maintain a **watchlist** for unknown low-risk objects; alert only on escalation or state change during watcher runs.
+- Check if unprivileged BPF is enabled (`kernel.unprivileged_bpf_disabled != 1`) while programs are loaded.
+- Monitor auditd `lost` / `backlog` counters for BPF monitoring gaps (requires `/etc/audit/rules.d/secmon-bpf.rules`).
 
-**Why:** eBPF is increasingly used by advanced rootkits to intercept syscalls, hide processes, and exfiltrate data without kernel modules. Unprivileged BPF access is a significant attack surface.
+**Why:** eBPF is increasingly used by advanced rootkits to intercept syscalls, hide processes, and exfiltrate data without kernel modules. BPF IDs are ephemeral; stable-key surveillance catches ID churn and short-lived loads while suppressing systemd firewall noise.
 
-**Data sources:** `bpftool prog list`, `bpftool map list`, `sysctl kernel.unprivileged_bpf_disabled`.
+**Data sources:**
+- `bpftool -j prog show`, `bpftool -j map show`, `bpftool -j link show`
+- `bpftool -j cgroup show /`, `bpftool -j net show`
+- `bpftool prog dump xlated id <ID>`
+- `sysctl kernel.unprivileged_bpf_disabled`
+- `/proc/<pid>/*` for loader provenance (exe, cmdline, cgroup, systemd unit, dpkg owner)
+- `auditctl -s`, `ausearch -k secmon-bpf` (optional short-lived detection)
+
+**Risk scoring (additive, cap ~150):**
+- High-risk program types (lsm, kprobe, fentry, raw_tracepoint, etc.): +40
+- High-risk attach targets (security_*, execve, vfs_*, tcp_*, bpf_*, ptrace, etc.): +50–60
+- High-risk map types (prog_array, ringbuf, sockmap, etc.): +30
+- Suspicious loader signals (/tmp exe, deleted binary, not in dpkg, root without systemd unit, shell interpreters): +20–40
+
+**Decision thresholds:**
+| Condition | WatchState | Finding |
+|-----------|------------|---------|
+| Hard systemd whitelist match | `ignored` | none |
+| stable_key in `bpf.baseline` | `baseline_match` | none |
+| score < 70 | `surveillance` | `NC-9-bpf-surveillance-started` (INFO, first sight only) |
+| score ≥ 70 | `alert_high` | `NC-9-bpf-high-risk-program` or `NC-9-bpf-high-risk-map` |
+| score ≥ 100 | `alert_critical` | `NC-9-bpf-critical-program` |
+
+**Watcher escalations** (`run_bpf_watch`, every `--tick`):
+- New link during surveillance → `NC-9-bpf-link-updated`
+- New pin path → `NC-9-bpf-pinned-persistence`
+- Map mutation → `NC-9-bpf-map-mutated`
+- Suspicious loader change → `NC-9-bpf-loader-suspicious`
+- audit lost/backlog increase → `NC-9-bpf-monitoring-gap`
+
+**CLI:**
+- `secmon --bpf-watch` — standalone watcher refresh + HIGH+ alert dispatch
+- `secmon --bpf-baseline list` — list promoted baseline keys
+- `secmon --bpf-baseline promote --key <stable_key>` — manual promotion (guarded: no lsm/kprobe/fentry/raw_tracepoint/struct_ops or prog_array)
+- `secmon --bpf-watchlist list` / `clear --key <stable_key>`
+
+**Deprecated findings:** `NC-9-newprog`, `NC-9-newmap` (ID-based delta alerts) — retained in output docs for historical `last_audit_findings` only.
 
 **Acceptance criteria:**
 - Returns CRITICAL if unprivileged BPF is enabled AND BPF programs exist.
-- Returns HIGH for unexpected BPF programs on security hooks.
-- Returns MEDIUM if `bpftool` is not available (add to recommendations).
-- Returns nil when unprivileged BPF is disabled or no unexpected programs exist.
+- Does **not** alert on new BPF IDs alone; unknown low-risk objects enter watchlist silently (INFO on first audit only).
+- Returns HIGH/CRITICAL immediately for high-risk programs/maps (score ≥ 70 / 100).
+- systemd `sd_fw_*` / `sd_devices` suppressed only when type, attach, loader, and cgroup all match.
+- Returns HIGH when auditd lost/backlog counters increase.
+- Returns MEDIUM if `bpftool` is not installed.
+- Baseline promotion is manual only; watcher runs are idempotent (no repeat alerts without escalation).
 
 ---
 
@@ -1540,7 +1639,7 @@ New checks slot into the existing layer framework:
 | NC-6 (Suspicious Mounts) | Layer 3 (Process Forensics) | New check module |
 | NC-7 (Systemd Integrity) | Layer 6 (Threat Intel) | Extends existing persistence mechanism audit |
 | NC-8 (Time Sync) | Layer 7 (Compliance) | New check module |
-| NC-9 (eBPF Integrity) | Layer 3 (Process Forensics) | New check module, conditional on bpftool |
+| NC-9 (eBPF Integrity) | Layer 3 (Process Forensics) | `src/secmon/bpf/` package; audit scan + tick watcher; conditional on bpftool |
 | NC-10 (Supply Chain) | Layer 7 (Compliance) | New check module, conditional on debsums |
 | NC-11 (Log Integrity) | Layer 5 (Log Correlation) | Extends existing log tampering detection |
 
@@ -1556,7 +1655,7 @@ New checks slot into the existing layer framework:
 | **Integration tests** | Full mode cycles with controlled inputs | All modes exercised |
 | **Property-based tests** | Mathematical invariants (sigma symmetry, variance properties) | Statistical integrity |
 | **Check matrix tests** | Each threat check tested with nil, normal, and alertable inputs | 100% of check matrix |
-| **State migration tests** | v2→v3 migration preserves all data | Lossless migration |
+| **State migration tests** | v1→v4 migration preserves data; v3→v4 adds `bpf` block | Lossless migration |
 | **Edge case tests** | Corrupt state, empty data, missing binaries, timeouts | Graceful degradation |
 
 ### 14.2 Test Infrastructure Requirements

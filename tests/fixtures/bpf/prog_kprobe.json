@@ -1,0 +1,11 @@
+[
+  {
+    "id": 3,
+    "name": "evil_kprobe",
+    "type": "kprobe",
+    "tag": "cafebabe",
+    "uid": 0,
+    "map_ids": [],
+    "pids": [3000]
+  }
+]

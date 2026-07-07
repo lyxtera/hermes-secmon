@@ -5,7 +5,8 @@ from secmon.checks import fail2ban, brute_force, port_scan, ports, invalid_user,
 
 
 def test_fail2ban_new_ban(cfg, state, mock_commands):
-    mock_commands(["fail2ban-client", "status", "sshd"], "Currently banned: 1\nBanned IP list: 5.5.5.5\n")
+    ips = " ".join(f"5.5.5.{i}" for i in range(5))
+    mock_commands(["fail2ban-client", "status", "sshd"], f"Currently banned: 5\nBanned IP list: {ips}\n")
     mock_commands(["iptables", "-L", "BOTNET", "-n"], "")
     alerts = fail2ban.check(state, cfg)
     assert any(a.severity == "HIGH" for a in alerts)
