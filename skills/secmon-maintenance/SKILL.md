@@ -9,6 +9,7 @@ triggers:
   - unexpected SUID or similar secmon alerts
   - audit report review and findings triage
   - investigating port_removed / secret_pattern / persist_modified findings
+  - investigating NC-9-newprog bpf false positives (transient package installs)
   - applying security upgrades
   - config whitelist tuning (secret_exclude_paths, ignored_ports)
   - suppressing INFO/LOW findings from audit report output
@@ -442,6 +443,33 @@ Three skills are now bundled in the plugin repo and deployed to `~/.hermes/skill
 
 ## Common False Positive Scenarios
 
+### BPF Programs from Transient Package Installs
+**Symptom:** `New BPF program: 684` (NC-9-newprog) after installing/uninstalling Docker or other container runtimes.
+
+**Root cause:** Installing Docker triggers systemd to load cgroup BPF programs (`cgroup_skb` / `sd_fw_*`, `cgroup_device` / `sd_devices`) that persist in kernel memory — `apt purge` doesn't clear them. These are kernel-level artifacts, not files. The next audit compares current BPF IDs against the stored baseline and flags any new ones.
+
+**Key insight — self-resolving:** The secmon baseline auto-updates in `process.py` line 144 after each audit. New BPF programs are absorbed after one cycle — finding disappears on the *next* audit without any config or code change.
+
+**Three-resolution ladder (pick one):**
+1. **Do nothing:** Wait one audit cycle — next run absorbs them into baseline. Self-resolved by design.
+2. **Reset BPF baseline immediately** (after uninstalling the runtime):
+   ```bash
+   python3 -c "
+   import json
+   s = json.load(open('/var/lib/secmon/state.json'))
+   s.get('audit_baseline', {}).pop('bpf_programs', None)
+   json.dump(s, open('/var/lib/secmon/state.json', 'w'))
+   "
+   ```
+3. **Reboot:** Clears all BPF programs from kernel memory; systemd reloads only its own. Overkill unless you're debugging.
+
+**Distinction from other false positives:**
+- SUID: filesystem-level, needs whitelist entry
+- Port removed: process-level, needs process-name whitelisting
+- BPF programs: kernel artifacts, self-resolving via baseline auto-update
+
+**Pitfall:** The uninstall script should reset BPF baseline as a post-install step if the user wants zero false positives on the next audit cycle.
+
 ### Port Removed — Transient Hermes Browser Ports
 **Symptom:** `Listening port removed: 45123`, `Listening port removed: 39333`
 
@@ -514,4 +542,4 @@ if transients:
 - State location: `/var/lib/secmon/state.json`
 - Install script: `~/.hermes/plugins/secmon/scripts/install.sh`
 - Alert tuning reference: `references/alert-tuning.md` — SUID whitelist, threshold tuning, stale cache fixes
-- Audit findings triage: `references/audit-findings-triage.md` — port_removed, secret_pattern, persist_modified, sec_updates, sysctl, and general triage workflow
+- Audit findings triage: `references/audit-findings-triage.md` — port_removed, secret_pattern, persist_modified, sec_updates, sysctl, NC-9-newprog BPF, and general triage workflow

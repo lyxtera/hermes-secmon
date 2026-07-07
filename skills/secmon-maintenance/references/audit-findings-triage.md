@@ -210,6 +210,59 @@ This allows `kernel.kptr_restrict=2` (Ubuntu default) instead of requiring `=1`.
 apt install -y debsums
 ```
 
+## 8. NC-9-newprog — BPF Programs from Transient Package Installs (Docker, etc.)
+
+**Symptom:** `New BPF program: 684`, `New BPF program: 685`, `New BPF program: 686`
+
+**Root cause:** Installing Docker (or any container runtime) triggers systemd to load cgroup BPF programs — specifically `cgroup_skb` (firewall, `sd_fw_egress`/`sd_fw_ingress`) and `cgroup_device` (device control, `sd_devices`) programs. These are **kernel-level artifacts**, not files — `apt purge` does not remove them. They persist in kernel memory until the cgroup hierarchy reorganizes or the system reboots.
+
+**Verification:**
+```bash
+# List all BPF programs, look for Docker/systemd cgroup programs
+bpftool prog list
+
+# Check if a program is from systemd (cgroup type, sd_* name)
+bpftool prog show id 684
+
+# Check when it was loaded
+bpftool prog show id 684 | grep loaded_at
+```
+
+**Resolution:** These are **self-resolving after one audit cycle**. The secmon baseline auto-updates on line 144 of `process.py` — the BPF IDs are saved after each audit, so the next run absorbs them. No config or code change needed:
+
+```
+Initial run:  baseline=[644-653],    current=[644-653,684-686]  → 3 HIGH findings reported
+Run 2:        baseline=[644-653,684-686],  current=[644-653]     → no findings (Docker was removed)
+```
+
+Wait for one more audit cycle and the finding disappears. If Docker is **still installed** (not uninstalled), the finding self-resolves on the *next* audit (baseline auto-updates).
+
+**Immediate cleanup (when Docker is uninstalled and you want zero traces):** Detach BPF programs or reboot:
+```bash
+# Option A: Reboot (clears all BPF programs, let systemd reload its own)
+reboot
+
+# Option B: Detach cgroup programs (less disruptive — systemd self-heals)
+bpftool cgroup detach /sys/fs/cgroup/unified/ cgroup_device pinned /sys/fs/cgroup/unified/ 2>/dev/null || true
+```
+In practice, waiting for the next audit cycle is sufficient — the baseline absorbs the change automatically.
+
+**Prevention:** If you regularly install/uninstall container runtimes, pre-prune the BPF state before the audit runs. The uninstall script should include a BPF baseline reset:
+```bash
+# After purging Docker, reset secmon BPF baseline so next audit doesn't flag stale IDs
+python3 -c "
+import json
+s = json.load(open('/var/lib/secmon/state.json'))
+s.get('audit_baseline', {}).pop('bpf_programs', None)
+json.dump(s, open('/var/lib/secmon/state.json', 'w'))
+"
+```
+
+**Key distinction:** This is different from SUID or port_removed false positives:
+- SUID: filesystem-level, needs a whitelist entry
+- Port removed: process-level, needs process-name whitelisting
+- BPF programs: kernel-level artifacts, self-resolving via baseline auto-update
+
 ## General Triage Workflow
 
 When investigating any HIGH/MEDIUM finding:
