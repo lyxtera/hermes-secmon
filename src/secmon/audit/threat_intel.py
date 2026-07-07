@@ -117,6 +117,16 @@ def _persistence_severity(path: str, content_hint: str = "") -> str:
     return "MEDIUM"
 
 
+def _is_excluded(fp: str, exclude_paths: set[str]) -> bool:
+    """Check if fp matches any exclude path exactly or as a directory prefix."""
+    if fp in exclude_paths:
+        return True
+    for ex in exclude_paths:
+        if fp.startswith(ex + "/") or fp.startswith(ex + os.sep):
+            return True
+    return False
+
+
 def _scan_secrets(cfg: dict) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     exclude_paths = set(cfg.get("whitelist", {}).get("secret_exclude_paths", []))
@@ -134,7 +144,7 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                     continue
                 for fname in files:
                     fp = os.path.join(dirpath, fname)
-                    if fp in exclude_paths:
+                    if _is_excluded(fp, exclude_paths):
                         continue
                     if fname in SECRET_FILENAMES or fname.endswith((".pem", ".key", ".env")):
                         try:
@@ -162,7 +172,7 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                     try:
                         if os.path.getsize(fp) > 500_000:
                             continue
-                        if fp in exclude_paths:
+                        if _is_excluded(fp, exclude_paths):
                             continue
                         sample = open(fp, encoding="utf-8", errors="replace").read(8000)
                         for pat in SECRET_PATTERNS:

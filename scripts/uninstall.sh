@@ -5,7 +5,7 @@ set -euo pipefail
 SOURCE_DIR="${SECMON_SOURCE:-/opt/secmon}"
 CLI_PATH="${SECMON_CLI:-/usr/local/bin/secmon}"
 VENV_DIR="${SECMON_VENV:-${SOURCE_DIR}/venv}"
-CONFIG_DIR="/etc/secmon"
+CONFIG_DIR="${HOME}/.hermes/secmon"
 DATA_DIR="/var/lib/secmon"
 PURGE=0
 REMOVE_BOTNET=0

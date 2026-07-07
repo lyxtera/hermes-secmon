@@ -233,7 +233,11 @@ def load_config(config_path: str | None = None, overrides: dict | None = None) -
     cfg = default_config()
     path = config_path or os.environ.get("SECMON_CONFIG_PATH", "")
     if not path:
-        for candidate in ("/etc/secmon/config.yaml", "config.yaml"):
+        for candidate in (
+            "/etc/secmon/config.yaml",
+            os.path.expanduser("~/.hermes/secmon/config.yaml"),
+            "config.yaml",
+        ):
             if os.path.isfile(candidate):
                 path = candidate
                 break
