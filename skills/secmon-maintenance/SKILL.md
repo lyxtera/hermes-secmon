@@ -115,6 +115,9 @@ When a script sends via `sendRichMessage` (Pipeline C), it needs:
 - Does the new config option appear in the README's **Audit exclusion tuning** table?
 - Does it appear in `config.yaml.example`?
 - If it's a whitelist key, does it appear in the `whitelist` section examples?
+- Does the README's exclusion tuning table need a new row?
+
+**Checklist — config.example.yaml sync:** Every time you add a new config key to `src/`, verify it also exists in `config.yaml.example` (the template users start from). The example is the canonical reference — `git diff HEAD -- config.yaml.example` should never show the example was forgotten. If the new key has a placeholder value distinct from production (e.g. `own_ip: 203.0.113.1` in example vs real IP in prod), note that the difference is deliberate and keep the placeholder.
 
 **Real example from this session:** `whitelist.port_removed` (static port suppression) was added to `network.py` but never made it to the README's exclusion table. The process-name variant (`port_removed_processes`) was documented in the triage reference, but the static port list was not — discover this by diffing `git diff HEAD~26..HEAD -- src/` for new config `.get()` calls and cross-referencing against the README.
 
@@ -159,7 +162,7 @@ When secmon triggers false positives (e.g., "Unexpected SUID" alerts):
 - Commit and push to public repo so all users benefit
 - Example: Adding missing paths to `DEBIAN_SUID_WHITELIST` in `file_integrity.py`
 
-**Config tuning (for thresholds):**\n- Edit `~/.hermes/secmon/config.yaml` (no sudo needed — inside Hermes home, auto-backed up via `hermes backup`)\n- Config search path (priority order): `/etc/secmon/config.yaml` → `~/.hermes/secmon/config.yaml` → `config.yaml` (cwd)\n- If the old `/etc/` path exists it takes precedence — migrate to `~/.hermes/` for automatic backup coverage\n- Example: Increase `fail2ban_min_new_bans` from 5 to 50 for busy servers
+**Config tuning (for thresholds):**\n- Edit `~/.hermes/secmon/config.yaml` (no sudo needed — inside Hermes home, auto-backed up via `hermes backup`)\n- Canonical config location: `~/.hermes/secmon/config.yaml`\n- Symlink: `/etc/secmon/config.yaml → ~/.hermes/secmon/config.yaml` for backwards compatibility\n- Config search path (priority order): `--config path` → `SECMON_CONFIG_PATH` env var → `/etc/secmon/config.yaml` (symlink) → `~/.hermes/secmon/config.yaml` → `config.yaml` (cwd)\n  - Note: `/etc/secmon/config.yaml` and `~/.hermes/secmon/config.yaml` point to the same file via symlink — no conflict\n- All three cron scripts (tick.py, audit.py, daily.py) use `SECMON_CONFIG_PATH` or fall back to `/etc/secmon/config.yaml` (symlink) — no code changes needed after consolidation\n- `/opt/secmon/config.yaml` and plugin-local copies (`/root/.hermes/plugins/secmon/config.yaml`) are orphan legacy — remove them whenever found\n- Old `/opt/secmon/config.yaml` had placeholder IPs (`1.1.1.1`) and different thresholds (`fail2ban_min_new_bans: 5`, `min_severity: MEDIUM`) — migrating to `~/.hermes/` config with real settings (`own_ip`, proper whitelists)\n\n**Config recovery from broken symlink / deleted file:**\n\nIf `~/.hermes/secmon/config.yaml` gets deleted and the symlink at `/etc/secmon/` becomes broken:\n\n1. Detect with `ls -la /etc/secmon/config.yaml` — shows broken symlink target\n2. Recreate from the plugin repo's template:\n   ```bash\n   cp /root/.hermes/plugins/secmon/config.yaml.example ~/.hermes/secmon/config.yaml\n   ```\n3. **Must customize** these values for the production server (the placeholder template has dummy IPs):\n\n   | Setting | Production value | Get from |\n   |---------|-----------------|----------|\n   | `own_ip` | Server's public IP | `curl -s ifconfig.me` or `secmon --check` output |\n   | `known_ssh_ips` | Trusted admin IPs | Your SSH client IPs |\n   | `fail2ban_min_new_bans` | 50+ for busy server | Old default 5 is too low |\n   | `min_severity` | `HIGH` | Changed from `MEDIUM` to suppress routine username enum noise |\n   | `port_removed` | Browser ephemeral ports | Check secmon alerts history |\n   | `port_removed_processes` | `[chromium, agent-browser-l]` | Hermes browser agent processes |\n   | `secret_exclude_paths` | Add state-snapshots dir | Directory prefix matching |\n\n4. Fix the symlink: `ln -sf ~/.hermes/secmon/config.yaml /etc/secmon/config.yaml`\n5. Verify: `readlink -f /etc/secmon/config.yaml` must resolve to the real file. Run `secmon --tick --verbose` — it should NOT timeout.\n6. **Pitfall:** Without a valid config file, `secmon --tick` hangs for 30s then times out (the tick.py wrapper catches this, but the cron job fails silently for hours). Always verify tick works after config recovery.\n\n**Production config reference (this server):**\n\n```yaml\nwhitelist:\n  own_ip: 188.130.207.113\n  known_ssh_ips:\n    - 203.0.113.1\n  port_removed:\n    - 45123\n    - 39333\n  port_removed_processes:\n    - chromium\n    - agent-browser-l\n  secret_exclude_paths:\n    - /root/.hermes/state-snapshots\n    - /root/.hermes/config.yaml\n    - /root/.hermes/.env\nrealtime:\n  fail2ban_min_new_bans: 50\nhermes:\n  min_severity: HIGH\n```
 
 ### 4. Verify with User — Never Commit Until Confirmed ⚠️
 
@@ -355,9 +358,77 @@ if not reportable:
 
 **Pitfall:** Put the suppressor in the **cron delivery script** (tick.py), not in core `output.py`. The core tool reports everything; the delivery layer handles noise filtering. This keeps the audit trail complete while keeping notifications clean.
 
+**Critical: `secmon --tick` outputs findings in TWO formats, not one**
+
+The `dispatch()` function in `alerts.py` outputs findings in a **non-table format**:
+
+```
+🟡 *MEDIUM* — Enumeration: Invalid User: Username enumeration from 🤫.🤫.🤫.0/24: 5 users → `secmon --status`
+```
+
+This has **nothing to do with `|` table rows**. tick.py's original `_is_routine()` loop only checked lines starting with `|` — all dispatch-format lines fell through to the `else` branch which just dumped `raw` output with no suppression applied.
+
+**Fix — add a second parsing path for dispatch-format lines:**
+
+```python
+DISPATCH_PATTERN = re.compile(
+    r'^[🟡🟠🔴🔵ℹ️] \*([A-Z]+)\* — ([^:]+): (.+?) → `'
+)
+
+def _is_routine_dispatch(line: str) -> bool:
+    m = DISPATCH_PATTERN.match(line)
+    if not m:
+        return False
+    return _is_routine(m.group(3))  # group(3) is the message
+
+for line in lines:
+    s = line.strip()
+    if not s:
+        continue
+    # Table format (from audit mode via audit.py send)
+    if s.startswith("|") and s.endswith("|") and ":---" not in s and "Finding" not in s:
+        cells = [c.strip().replace("*", "") for c in s.strip("|").split("|")]
+        if len(cells) >= 2:
+            finding_text = " · ".join(cell for cell in cells[:3] if cell)
+            if _is_routine(finding_text):
+                suppressed += 1
+                continue
+            findings.append(finding_text)
+    # Dispatch format (from secmon --tick directly)
+    elif DISPATCH_PATTERN.match(s):
+        if _is_routine_dispatch(s):
+            suppressed += 1
+            continue
+        findings.append(s)
+```
+
+Always test the regex against actual secmon output format after any secmon version update — the `→ hint` suffix pattern could change.
+
 **When to broaden:** If a new routine false positive emerges, add its pattern to `ROUTINE_PATTERNS`. Prefer broader suppression over tuning thresholds -- threshold changes can miss genuine spikes.
 
 ### 6. Verify Fixes
+
+**Manual cron script testing (before waiting for cron schedule):**
+```bash
+# Run each cron delivery script directly to verify
+cd ~/.hermes/scripts/secmon
+python3 tick.py    # exit 0 = silent (no findings or all suppressed)
+python3 audit.py   # exit 0 = silent (no findings)
+python3 daily.py   # exit 0 = silent (no findings)
+
+# Check if findings are actually being produced (not exit 1)
+/usr/local/bin/secmon --tick --verbose 2>&1
+
+# Test config parsing
+/usr/local/bin/secmon --tick --config /etc/secmon/config.yaml 2>&1
+```
+
+**Pitfall:** `exit 1` from these scripts doesn't always mean failure — when tick.py/audit.py send findings via Telegram API directly (Pipeline C), they exit 0 but produce no stdout. The cron system records "silent (empty output)" even when a message was sent. Check the cron output dir for actual delivery records:
+```bash
+ls -lt ~/.hermes/cron/output/<job-id>/ | head -5
+cat ~/.hermes/cron/output/<job-id>/latest.md
+```
+
 Confirm with user, then check Telegram for audit results (should no longer show the false positive).
 
 ## Plugin Skill Bundling
@@ -608,9 +679,37 @@ if transients:
 ### Fail2ban Burst Alerts
 **Symptom:** "SSH ban burst: X new bans" firing too frequently
 **Root cause:** `fail2ban_min_new_bans` threshold too low for server's normal traffic
-**Fix:** Increase threshold in `/etc/secmon/config.yaml` (typical busy server: 50+)
+**Fix:** Increase threshold in config (typical busy server: 50+)
 
-### Baseline Not Updating
+### Outbound Connections — Process-Based Whitelisting
+**Symptom:** "Direct-IP HTTPS session to Cloudflare:443 (hermes)" or "New outbound from privileged process hermes"
+**Root cause:** The Hermes agent makes API calls to providers (OpenRouter via Cloudflare, Telegram Bot API) that appear as direct-IP HTTPS connections to secmon's outbound monitor.
+**Fix (prefer over IP ranges):** Add a **process-only** entry to `whitelist.outbound_destinations` — no hardcoded IPs needed:
+
+```yaml
+whitelist:
+  outbound_destinations:
+    - process: hermes   # whitelist ALL outbound from this process
+```
+
+This requires a **code change** in `_is_whitelisted()` (`src/secmon/checks/outbound.py`). Originally, process-only entries (no IP/CIDR) fell through and never matched. After the fix, a matched process with no IP/CIDR returns `True` — whitelisting all connections from that process.
+
+**Why process-based is better than IP ranges:**
+| Aspect | IP ranges | Process-based |
+|--------|-----------|---------------|
+| Cloudflare IPs | 1000+ ranges, change frequently | `{process: hermes}` — zero maintenance |
+| Provider switch | Must audit and update all ranges | Works automatically |
+| Other processes | Still affected | Targeted — caddy, sshd still monitored |
+
+**Test in isolation:**
+```python
+from secmon.checks.outbound import _is_whitelisted
+cfg = {'whitelist': {'outbound_destinations': [{'process': 'hermes'}]}}
+assert _is_whitelisted('104.18.2.115', 443, 'hermes', cfg) == True
+assert _is_whitelisted('104.18.2.115', 443, 'caddy', cfg) == False
+```
+
+**Why not CDN IP whitelisting?** Cloudflare uses AS13335 with thousands of ranges across their CDN. Hardcoding them is fragile — they add/remove ranges frequently. Process-name matching is the only solid approach.\n\n### Baseline Not Updating
 **Symptom:** Alert keeps firing even after whitelist fix
 **Root cause:** `suid_cache` in state stored old values
 **Fix:** Run `sudo secmon --reset-baseline` or manually clear cache in `/var/lib/secmon/state.json`
