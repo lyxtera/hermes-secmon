@@ -21,7 +21,7 @@ def set_runner(runner: Callable[..., subprocess.CompletedProcess] | None) -> Non
 def run_cmd(
     args: list[str],
     *,
-    timeout: int = 30,
+    timeout: int = 120,
     text: bool = True,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
@@ -45,7 +45,7 @@ def run_cmd(
         raise
 
 
-def run_cmd_safe(args: list[str], *, timeout: int = 30, default: str = "") -> str:
+def run_cmd_safe(args: list[str], *, timeout: int = 120, default: str = "") -> str:
     """Run command, return stdout or default on failure."""
     try:
         result = run_cmd(args, timeout=timeout)
@@ -58,7 +58,7 @@ def run_cmd_safe(args: list[str], *, timeout: int = 30, default: str = "") -> st
         return default
 
 
-def run_cmd_json(args: list[str], *, timeout: int = 30) -> dict[str, Any] | list[Any] | None:
+def run_cmd_json(args: list[str], *, timeout: int = 120) -> dict[str, Any] | list[Any] | None:
     """Run command and parse JSON stdout, or return None on failure."""
     raw = run_cmd_safe(args, timeout=timeout, default="")
     if not raw.strip():
