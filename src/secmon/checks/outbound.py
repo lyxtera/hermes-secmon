@@ -45,11 +45,15 @@ def _is_whitelisted(dest_ip: str, dest_port: int, owner: str, cfg: dict) -> bool
         if cidr:
             if ip_in_prefixes(dest_ip, [cidr]):
                 return True
-        elif ip:
+            continue
+        if ip:
             if dest_ip == ip:
                 return True
-        elif not proc:
-            continue  # no filter criteria at all — skip
+            continue
+        # Process-only entry (no IP/CIDR) — whitelist all from this process
+        if proc:
+            return True
+        continue  # no filter criteria at all — skip
     return False
 
 

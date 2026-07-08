@@ -1,5 +1,6 @@
 # Security Monitor Configuration Example
-# Copy to /etc/secmon/config.yaml or set SECMON_CONFIG_PATH
+# Copy to ~/.hermes/secmon/config.yaml, /etc/secmon/config.yaml (symlink),
+# or set SECMON_CONFIG_PATH
 
 general:
   data_dir: /var/lib/secmon
@@ -24,6 +25,10 @@ whitelist:
     - "192.168.0.0/16"
     - "127.0.0.0/8"
 
+  # Process-based outbound whitelist — no IP ranges needed
+  outbound_destinations:
+    - process: "hermes"
+
   # Hidden tmp entries to ignore (e.g. X11 Unix sockets from VNC)
   hidden_tmp_entries:
     - ".font-unix"
@@ -40,6 +45,7 @@ whitelist:
     - "/root/.hermes/config.yaml"
     - "/root/.hermes/.env"
     - "/root/.hermes/skills/stitch-design/README.md"
+    - "/root/.hermes/state-snapshots"
 
   # PIDs to exclude from process hollowing / anonymous mapping checks
   proc_hollow_exclude_pids:
@@ -54,6 +60,16 @@ whitelist:
     - "/etc/systemd/system/secmon-"
     - "/etc/systemd/system/hermes-"
 
+  # Ports whitelisted as intentionally removed/closed
+  port_removed:
+    - 45123
+    - 39333
+
+  # Process names whose transient port usage should be ignored
+  port_removed_processes:
+    - "chromium"
+    - "agent-browser-l"
+
 anomaly:
   baseline_min_samples: 4
   max_baseline_days: 30
@@ -65,6 +81,7 @@ realtime:
   ssh_brute_force_threshold: 10
   invalid_user_threshold: 5
   kernel_error_threshold: 3
+  fail2ban_min_new_bans: 50    # suppress bursts under this per-run
 
 botnet:
   lookback_hours: 24
