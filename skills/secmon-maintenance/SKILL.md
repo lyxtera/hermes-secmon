@@ -54,6 +54,12 @@ After `git pull`, run `sync-cron.sh` to re-deploy:
 bash ~/.hermes/plugins/secmon/scripts/sync-cron.sh ~/.hermes/plugins/secmon
 ```
 
+**⚠️ Dual-location fix rule:** When editing a cron delivery script (tick.py, audit.py, daily.py), always patch **both** locations:
+- `~/.hermes/plugins/secmon/scripts/<script>.py` — the **source** (git-tracked, installed via install.sh)
+- `~/.hermes/scripts/secmon/<script>.py` — the **deployed copy** (what cron actually runs)
+
+If you only patch the deployed copy, re-running install.sh or sync-cron.sh will silently overwrite your fix.
+
 ### Cron job registration (no-agent mode)
 
 Jobs use `no_agent: true` so stdout from the script is delivered verbatim. When the script calls the Telegram Bot API directly (`sendRichMessage`), set `deliver: local` so Hermes doesn't double-deliver:
@@ -422,6 +428,12 @@ python3 daily.py   # exit 0 = silent (no findings)
 # Test config parsing
 /usr/local/bin/secmon --tick --config /etc/secmon/config.yaml 2>&1
 ```
+
+**Pitfall: tick.py subprocess timeout too short.** The cron wrapper at `tick.py` line 52 calls `subprocess.run(cmd, ..., timeout=30)`. `secmon --tick` can occasionally take >30s (e.g. during tick-gap detection after a long outage, or when multiple bpftool calls stack). This produces `subprocess.TimeoutExpired` errors in cron logs. Fix: `timeout=30` → `timeout=120`.
+
+**Critical: patch BOTH locations.** When fixing tick.py (or any cron delivery script), always update:
+1. The **deployed copy** at `~/.hermes/scripts/secmon/tick.py` — this is what cron actually runs
+2. The **source file** at `~/.hermes/plugins/secmon/scripts/tick.py` — this is what `install.sh` copies from during deployment. If only the deployed copy is patched, `re-run install.sh` or `sync-cron.sh` will overwrite the fix.
 
 **Pitfall:** `exit 1` from these scripts doesn't always mean failure — when tick.py/audit.py send findings via Telegram API directly (Pipeline C), they exit 0 but produce no stdout. The cron system records "silent (empty output)" even when a message was sent. Check the cron output dir for actual delivery records:
 ```bash
