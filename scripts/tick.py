@@ -40,7 +40,7 @@ cmd = [CLI, "--tick"]
 if os.path.isfile(CONFIG):
     cmd += ["--config", CONFIG]
 
-proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 raw = proc.stdout.strip()
 
 # Silent — no findings
