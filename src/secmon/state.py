@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import shutil
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from secmon.config import METRIC_KEYS, snapshot_dir, state_file_path
 from secmon.bpf.watchlist import default_bpf_state
@@ -17,6 +19,29 @@ from secmon.utils import utcnow, utcnow_iso
 logger = logging.getLogger("secmon.state")
 
 CURRENT_VERSION = 4
+
+
+@contextmanager
+def _state_lock(state_path: str, exclusive: bool = False) -> Iterator[None]:
+    """Advisory file lock on a per-state-file .lock file.
+
+    Prevents concurrent secmon instances (e.g. --tick and --audit) from
+    clobbering each other's state updates via the classic
+    read-modify-write race.
+
+    Shared (read) lock  — any number of concurrent readers allowed.
+    Exclusive (write) lock — single writer, blocks all readers.
+    """
+    lock_path = state_path + ".lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(lock_fd, mode)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def default_state() -> dict[str, Any]:
@@ -115,17 +140,18 @@ def load_state(cfg: dict, path: str | None = None) -> dict:
     spath = path or state_file_path(cfg)
     if not os.path.isfile(spath):
         return default_state()
-    try:
-        with open(spath, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except json.JSONDecodeError:
-        logger.error("state file corrupt, using defaults: %s", spath)
-        backup = f"{spath}.corrupt.{int(utcnow().timestamp())}"
+    with _state_lock(spath, exclusive=False):
         try:
-            shutil.copy2(spath, backup)
-        except OSError:
-            pass
-        return default_state()
+            with open(spath, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except json.JSONDecodeError:
+            logger.error("state file corrupt, using defaults: %s", spath)
+            backup = f"{spath}.corrupt.{int(utcnow().timestamp())}"
+            try:
+                shutil.copy2(spath, backup)
+            except OSError:
+                pass
+            return default_state()
     if data.get("version", 1) < CURRENT_VERSION:
         data = run_migrations(data)
     return data
@@ -160,21 +186,22 @@ def save_state(cfg: dict, data: dict, path: str | None = None) -> bool:
     spath = path or state_file_path(cfg)
     data["updated_at"] = utcnow_iso()
     data["version"] = CURRENT_VERSION
-    try:
-        _atomic_write(spath, json.dumps(data, indent=2, sort_keys=True))
-        os.chmod(spath, 0o600)  # enforce secure permissions despite umask
-        sdir = snapshot_dir(cfg)
-        os.makedirs(sdir, exist_ok=True)
-        today = utcnow().strftime("%Y-%m-%d")
-        snap = os.path.join(sdir, f"state.{today}.json")
-        _atomic_write(snap, json.dumps(data, indent=2, sort_keys=True))
-        os.chmod(snap, 0o600)
-        keep = cfg["general"].get("snapshot_retention_days", 7)
-        _prune_snapshots(sdir, keep)
-        return True
-    except OSError as exc:
-        logger.error("failed to save state: %s", exc)
-        return False
+    with _state_lock(spath, exclusive=True):
+        try:
+            _atomic_write(spath, json.dumps(data, indent=2, sort_keys=True))
+            os.chmod(spath, 0o600)  # enforce secure permissions despite umask
+            sdir = snapshot_dir(cfg)
+            os.makedirs(sdir, exist_ok=True)
+            today = utcnow().strftime("%Y-%m-%d")
+            snap = os.path.join(sdir, f"state.{today}.json")
+            _atomic_write(snap, json.dumps(data, indent=2, sort_keys=True))
+            os.chmod(snap, 0o600)
+            keep = cfg["general"].get("snapshot_retention_days", 7)
+            _prune_snapshots(sdir, keep)
+            return True
+        except OSError as exc:
+            logger.error("failed to save state: %s", exc)
+            return False
 
 
 def make_daily_sample(metrics: dict[str, int]) -> dict:
