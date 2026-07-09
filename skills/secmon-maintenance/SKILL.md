@@ -429,11 +429,27 @@ python3 daily.py   # exit 0 = silent (no findings)
 /usr/local/bin/secmon --tick --config /etc/secmon/config.yaml 2>&1
 ```
 
-**Pitfall: tick.py subprocess timeout too short.** The cron wrapper at `tick.py` line 52 calls `subprocess.run(cmd, ..., timeout=30)`. `secmon --tick` can occasionally take >30s (e.g. during tick-gap detection after a long outage, or when multiple bpftool calls stack). This produces `subprocess.TimeoutExpired` errors in cron logs. Fix: `timeout=30` → `timeout=120`.
+**Pitfall: tick.py subprocess timeout too short.** The cron wrapper at `tick.py` calls `subprocess.run(cmd, ..., timeout=30)`. `secmon --tick` can occasionally take >30s (e.g. during tick-gap detection after a long outage, or when multiple bpftool calls stack). This produces `subprocess.TimeoutExpired` errors in cron logs. Fix: `timeout=30` → `timeout=120`.
 
-**Critical: patch BOTH locations.** When fixing tick.py (or any cron delivery script), always update:
-1. The **deployed copy** at `~/.hermes/scripts/secmon/tick.py` — this is what cron actually runs
-2. The **source file** at `~/.hermes/plugins/secmon/scripts/tick.py` — this is what `install.sh` copies from during deployment. If only the deployed copy is patched, `re-run install.sh` or `sync-cron.sh` will overwrite the fix.
+**Pitfall: internal shell.py defaults also too short.** Even with tick.py's wrapper timeout bumped, `secmon --tick` itself may time out internally before reaching `save_state()` if its subprocess helpers also default to 30s. The three functions in `shell.py` all had `timeout=30` as default — bump them all to 120s.
+
+| Function | Default changed |
+|---|---|
+| `run_cmd(args, ..., timeout: int = 30)` → 120 |
+| `run_cmd_safe(args, ..., timeout: int = 30)` → 120 |
+| `run_cmd_json(args, ..., timeout: int = 30)` → 120 |
+
+Per-command explicit timeouts (10s for iptables/dpkg, 30s for short journal queries, 60s for 24h journals) are intentional — leave them.
+
+**Consequence of hitting the internal timeout mid-tick:** `secmon --tick` exits 0 with **empty stdout** but `save_state()` never ran, so `last_tick` stays stale. Tick.py sees empty stdout → `sys.exit(0)` → cron logs "silent (empty output)". The next tick detects a 30m gap → CRITICAL `self_prot:missed_tick` fires. This is a one-hop delay — the gap alert is the symptom, not the root cause. Always check whether the missed tick actually crashed before investigating other threats.
+
+**Gap threshold formula:** `tick_threshold = max(cron_interval * 120, 600)` where `cron_interval` = 15 min → `1800s` = **30 min** (2× the interval). A single missed tick won't trigger — it takes two consecutive misses or a 30min+ gap.
+
+**Concurrent cron contention at :00:** secmon-tick, secmon-skills-sync, and secmon-audit can all fire around HH:00. If a later check in run_tick crashes before `save_state()`, the state on disk remains stale. Ticks at :00 are more likely to fail than :15/:30/:45 for this reason.
+
+**Critical: patch BOTH locations.** When fixing tick.py (or any cron delivery script), update:
+1. The **deployed copy** at `~/.hermes/scripts/secmon/tick.py` — what cron runs
+2. The **source file** at `~/.hermes/plugins/secmon/scripts/tick.py` — what `install.sh` copies. Patch only deployed = fix lost on reinstall.
 
 **Pitfall:** `exit 1` from these scripts doesn't always mean failure — when tick.py/audit.py send findings via Telegram API directly (Pipeline C), they exit 0 but produce no stdout. The cron system records "silent (empty output)" even when a message was sent. Check the cron output dir for actual delivery records:
 ```bash
