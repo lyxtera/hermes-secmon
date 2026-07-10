@@ -56,7 +56,6 @@ Each runs as an independent try/except-isolated check that returns nil (silent) 
 | invalid user | MEDIUM | Username enumeration bursts |
 | kernel errors | MEDIUM | Error spike detection |
 | unauthorized SSH | CRITICAL | Sessions from non-whitelist IPs |
-| self-protection | CRITICAL | Missed tick gaps, code tampering, permission drift. Tick-gap threshold auto-detects from cron schedule (`~/.hermes/cron/jobs.json`) — no hardcoded value |
 | suspicious outbound | HIGH | Potential C2/IRC beaconing |
 
 ## Anomaly Detection (statistical)
@@ -197,7 +196,7 @@ SSH rate-limit (4/min), SYN-flood limit, invalid-drop, NULL/XMAS/SYN-RST/SYN-FIN
 | Only excluding child processes of secmon in hollow checks (missing parent chain) | Secmon's leaf process (the CLI tool) usually doesn't have RWX maps — the Hermes gateway parent does. Walk `/proc/*/stat` ppid **upward** from every seed PID to catch the full ancestry. See `references/self-exclusion-cluster.md` |
 | Wrapping audit output in ```json code fence in shell wrapper | The markdown formatter already produces self-contained Markdown — cron wrapper should pass through directly, not re-wrap |
 | Pipeing markdown output through Python `json.load()` to filter findings | `format_audit_markdown()` already groups by severity — pass full output through. If filtering needed, grep the severity headers (e.g. `grep -q "^### 🔴"`) |
-| Hardcoded 20-min tick-gap threshold breaking on non-standard cron schedules | `self_protection` check uses `(now - last_tick) > 20 * 60`. If cron runs every 6h, fires every cycle. Fix: read `~/.hermes/cron/jobs.json` at runtime to auto-detect interval, set threshold to `max(interval_min * 120, 600)`. See `references/tick-gap-detection.md` |
+| Self-protection module (removed) | `self_protection.check()` was deleted — generated false CRITICAL tick-gap alerts daily. Root cause: the Hermes cron scheduler skips overlapping runs of the same job ID, so a slow tick (>15 min) during 6h deep audits dropped the :15 run, creating a 30m gap. Additionally, the entire module was trivially bypassable by a root-level actor. See `references/self-protection-removed.md` |
 | `layer_count`, `trend_new`, `trend_resolved`, `trend_persistent`, `risk_increase` appearing as "RESOLVED" findings in audit output | These are Trends layer's own internal meta-checks, not real security findings. They pollute the before/after diff because they're stored in `last_audit_findings` state and re-compared every run. Fix: define `_INTERNAL_TREND_CHECKS = {"layer_count", "trend_new", "trend_resolved", "trend_persistent", "risk_increase"}` and filter them out of both `prev_ids` and `cur_ids` before computing `new_ids`, `resolved`, `persistent`. Also enrich the RESOLVED message with original severity+text from the previous finding (not just the bare check_id). |
 | `persist_modified` firing every audit on `systemd_timers` | The baseline stores a SHA256 of `systemctl list-timers --all`, but the output contains dynamic time columns (`PASSED`, `LAST`, `NEXT`) that change every time a timer fires. The hash will ALWAYS differ. **Fix applied:** Normalize timer output by stripping dynamic columns — only hash stable UNIT + ACTIVATES pairs using `line.rsplit(None, 2)`. See `threat_intel.py` `_collect_persistence_entries()`. |
 | `modified_bin` flagging `/sbin/bpftool` (or any `/sbin/` file) as "not in dpkg" | On Debian 12 (usrmerge), `/sbin` is a symlink to `/usr/sbin`. `dpkg -S /sbin/bpftool` fails because dpkg tracks the canonical path. Fix: resolve symlinks with `os.path.realpath(fp)` before passing to `dpkg -S`. |
@@ -214,7 +213,7 @@ SSH rate-limit (4/min), SYN-flood limit, invalid-drop, NULL/XMAS/SYN-RST/SYN-FIN
 - `references/audit-remediation-workflow.md` — Step-by-step investigation and remediation procedure for audit findings, including false positive triage table, parallel fix batching by layer, and verification
 - `references/self-exclusion-cluster.md` — Auto-discovery of secmon's own process cluster (parent chain up + child chain down) to prevent self-flagging in proc hollow checks
 - `references/outbound-check.md` — Outbound connection check (TC-8) internals: regex parsing (local-vs-peer bug), whitelist system, testing pattern
-- `references/tick-gap-detection.md` — Self-protection tick gap auto-detection: cron interval parsing, supported patterns, threshold formula, fallback behavior
+- `references/self-protection-removed.md` — Self-protection module was deleted: why it was removed, what it checked, the tick-gap root cause, and the early last_tick save that replaced it
 - `references/known-false-positives.md` — Catalog of chronic false positives (systemd_timers, state-snapshot secrets, kernel-upgrade-reboot, SSH enumeration) with root causes and fix steps — consult when triaging audit findings to avoid re-investigating known non-issues
 
 

@@ -429,7 +429,7 @@ python3 daily.py   # exit 0 = silent (no findings)
 /usr/local/bin/secmon --tick --config /etc/secmon/config.yaml 2>&1
 ```
 
-**Pitfall: tick.py subprocess timeout too short.** The cron wrapper at `tick.py` calls `subprocess.run(cmd, ..., timeout=30)`. `secmon --tick` can occasionally take >30s (e.g. during tick-gap detection after a long outage, or when multiple bpftool calls stack). This produces `subprocess.TimeoutExpired` errors in cron logs. Fix: `timeout=30` → `timeout=120`.
+**Pitfall: tick.py subprocess timeout too short.** The cron wrapper at `tick.py` calls `subprocess.run(cmd, ..., timeout=30)`. `secmon --tick` can occasionally take >30s (e.g. when multiple bpftool calls stack). This produces `subprocess.TimeoutExpired` errors in cron logs. Fix: `timeout=30` → `timeout=120`.
 
 **Pitfall: internal shell.py defaults also too short.** Even with tick.py's wrapper timeout bumped, `secmon --tick` itself may time out internally before reaching `save_state()` if its subprocess helpers also default to 30s. The three functions in `shell.py` all had `timeout=30` as default — bump them all to 120s.
 
@@ -440,12 +440,6 @@ python3 daily.py   # exit 0 = silent (no findings)
 | `run_cmd_json(args, ..., timeout: int = 30)` → 120 |
 
 Per-command explicit timeouts (10s for iptables/dpkg, 30s for short journal queries, 60s for 24h journals) are intentional — leave them.
-
-**Consequence of hitting the internal timeout mid-tick:** `secmon --tick` exits 0 with **empty stdout** but `save_state()` never ran, so `last_tick` stays stale. Tick.py sees empty stdout → `sys.exit(0)` → cron logs "silent (empty output)". The next tick detects a 30m gap → CRITICAL `self_prot:missed_tick` fires. This is a one-hop delay — the gap alert is the symptom, not the root cause. Always check whether the missed tick actually crashed before investigating other threats.
-
-**Gap threshold formula:** `tick_threshold = max(cron_interval * 120, 600)` where `cron_interval` = 15 min → `1800s` = **30 min** (2× the interval). A single missed tick won't trigger — it takes two consecutive misses or a 30min+ gap.
-
-**Concurrent cron contention at :00:** secmon-tick, secmon-skills-sync, and secmon-audit can all fire around HH:00. If a later check in run_tick crashes before `save_state()`, the state on disk remains stale. Ticks at :00 are more likely to fail than :15/:30/:45 for this reason. See `references/concurrent-state-file-race.md` for a documented case where the audit job overwrote the tick's `last_tick` update via the read-modify-write race.
 
 **Critical: patch BOTH locations.** When fixing tick.py (or any cron delivery script), update:
 1. The **deployed copy** at `~/.hermes/scripts/secmon/tick.py` — what cron runs
@@ -798,4 +792,4 @@ sha256sum /dev/shm/.bt
 - Alert tuning reference: `references/alert-tuning.md` — SUID whitelist, threshold tuning, stale cache fixes
 - Audit findings triage: `references/audit-findings-triage.md` — port_removed, secret_pattern, persist_modified, sec_updates, sysctl, and general triage workflow
 - BPF watcher reference: `references/bpf-watcher.md` — comprehensive check ID table, classifier rules, stable key format, state machine transitions
-- Concurrent state-file race: `references/concurrent-state-file-race.md` — how concurrent secmon processes (--tick + --audit) can clobber last_tick via the read-modify-write pattern on state.json, and the fcntl.flock() fix
+- Concurrent state-file race: `references/concurrent-state-file-race.md` — how concurrent secmon processes (--tick + --audit) can clobber last_tick via the read-modify-write pattern on state.json, and the fcntl.flock() fix (now historical — the self_protection check that read last_tick was removed, so the race no longer produces alerts)
