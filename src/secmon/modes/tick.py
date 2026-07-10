@@ -13,13 +13,22 @@ from secmon.checks import run_checks
 from secmon.metrics import collect_metrics_from_state
 from secmon.modes.daily import run_daily
 from secmon.state import save_state
-from secmon.utils import parse_iso, utcnow
+from secmon.utils import parse_iso, utcnow, utcnow_iso
 
 logger = logging.getLogger("secmon.tick")
 
 
 def run_tick(state: dict, cfg: dict) -> int:
     logger.info("tick start")
+    # Persist last_tick at the start so even a slow tick (e.g. 6h deep audit)
+    # doesn't leave the state file with a stale timestamp. The Hermes cron
+    # scheduler skips overlapping runs of the same job ID, so a slow tick
+    # can cause the next scheduled run at :15 to be dropped — persistent
+    # last_tick keeps the record accurate regardless.
+    ms = state.setdefault("monitor_state", {})
+    ms["last_tick"] = utcnow_iso()
+    save_state(cfg, state)
+
     check_baseline_staleness(state)
     metrics = collect_metrics_from_state(cfg, state)
     alerts = []
