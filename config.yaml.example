@@ -54,6 +54,7 @@ whitelist:
   # Process comm names to exclude from hollowing/mapping checks
   proc_hollow_exclude_comms:
     - "node"   # Node.js LSP servers (Pyright, etc.) use JIT memory allocators
+    - "unattended-upgr"  # Python unattended-upgrades creates rwxp JIT mapping
 
   # Persistence entry prefixes to ignore (secmon/hermes own systemd units)
   persist_exclude_prefixes:
