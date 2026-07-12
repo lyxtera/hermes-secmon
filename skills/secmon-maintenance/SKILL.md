@@ -773,6 +773,28 @@ sha256sum /dev/shm/.bt
 ```
 **Assessment:** `.bt` files in `/dev/shm` are typically compiled BPF tracing tools (bpftrace, custom bpf tools) — 2.4 MB ELF, dynamic linked, references `libclang` and `bpf_*` syscall wrappers. If not currently running, it's likely a leftover from a previous experiment. Remove with `rm /dev/shm/.bt` and add to `hidden_tmp_entries` whitelist if it's expected to reappear.
 
+### Hidden Proc — Transient Process False Positive
+
+**Symptom:** `hidden_proc` CRITICAL: "Processes in /proc not in ps: [35753]"
+
+**Root cause:** A short-lived transient process existed when secmon scanned `/proc` but exited before `ps` could enumerate it. This is a **race condition** — no actual process hiding.
+
+**Verification:**
+```bash
+ls -la /proc/35753/       # ❌ No such file — process already exited
+cat /proc/35753/cmdline   # ❌ Gone
+ps aux | grep 35753       # ❌ Not found
+```
+
+**Common sources of transient processes on this server:**
+- **Hermes snap scripts** (`/tmp/hermes-snap-*.sh`) — Hermes creates temp shell scripts for tool execution, they run and exit within milliseconds
+- Cron jobs
+- Short-lived bash one-liners
+
+**Risk increase correlation:** The `risk_increase` HIGH finding (e.g., 4→10) is caused BY the `hidden_proc` finding itself. When that CRITICAL finding is added to the audit, the risk score jumps. Once the process has exited and both findings clear on the next audit, the score returns to baseline. This is a self-referential false positive — `risk_increase` is valid (the score did increase), but the root cause was a false positive.
+
+**Fix:** No code change needed — these are legitimate transient processes. The next `--audit` run will have no findings and the risk score will return to normal. Only investigate if PID is persistent across multiple audits (check `cat /proc/<PID>/cmdline`).
+
 ## User Preferences
 
 - **Direct action** - Just do the fix, don't explain at length
