@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from secmon.alerts import Alert
@@ -22,6 +23,15 @@ def _is_suspicious_port(port: int, cfg: dict) -> bool:
     return False
 
 
+def _get_pid(line: str) -> int:
+    """Extract PID from an ss -tnp line.
+
+    ss output:  users:((\"processname\",pid=1234,fd=N))
+    """
+    m = re.search(r'pid=(\d+)', line)
+    return int(m.group(1)) if m else 0
+
+
 def _process_owner(line: str) -> str:
     m = re.search(r'users:\(\("([^"]+)"', line)
     return m.group(1) if m else ""
@@ -31,15 +41,70 @@ def _is_direct_ip_https(dest_ip: str, port: int) -> bool:
     return port in (443, 8443) and not is_private_or_loopback(dest_ip)
 
 
-def _is_whitelisted(dest_ip: str, dest_port: int, owner: str, cfg: dict) -> bool:
-    """Check if a connection matches a whitelisted outbound destination."""
+def _get_comm(pid: int) -> str:
+    """Read the process command name from /proc/pid/comm."""
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip()
+    except (OSError, IOError):
+        return ""
+
+
+def _get_ppid(pid: int) -> int:
+    """Read the parent PID from /proc/pid/status."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, IOError, ValueError):
+        pass
+    return 0
+
+
+def _ancestor_has(pid: int, target: str) -> bool:
+    """Walk the process tree upward checking if any ancestor's comm matches target.
+
+    Returns True if target is found in the ancestor chain (excluding the process
+    itself).  Maximum depth 32 to prevent infinite loops from kernel pid
+    namespace cycles.
+    """
+    depth = 0
+    ppid = _get_ppid(pid)
+    while ppid > 0 and depth < 32:
+        comm = _get_comm(ppid)
+        if comm == target:
+            return True
+        ppid = _get_ppid(ppid)
+        depth += 1
+    return False
+
+
+def _is_whitelisted(dest_ip: str, dest_port: int, owner: str, pid: int, cfg: dict) -> bool:
+    """Check if a connection matches a whitelisted outbound destination.
+
+    Supports three constraint patterns in the whitelist entry:
+      - ``process`` only              — whitelist ALL from this process (legacy)
+      - ``process`` + ``cidr``/``ip``  — whitelist process connections to that
+                                         destination
+      - ``process`` + ``parent_process`` — whitelist process connections whose
+                                         ancestor chain includes the named
+                                         parent (e.g. ``hermes`` → legitimate
+                                         git clone/pull)
+    """
     entries = cfg.get("whitelist", {}).get("outbound_destinations", [])
     for entry in entries:
-        # Check process match if specified
         proc = entry.get("process", "")
         if proc and owner != proc:
             continue
-        # Check IP/CIDR match if specified
+
+        # Parent-process constraint: walk the tree
+        parent_proc = entry.get("parent_process", "")
+        if parent_proc:
+            if not pid or not _ancestor_has(pid, parent_proc):
+                continue  # parent not in chain — don't whitelist
+
+        # IP/CIDR constraint
         cidr = entry.get("cidr", "")
         ip = entry.get("ip", "")
         if cidr:
@@ -50,10 +115,11 @@ def _is_whitelisted(dest_ip: str, dest_port: int, owner: str, cfg: dict) -> bool
             if dest_ip == ip:
                 return True
             continue
+
         # Process-only entry (no IP/CIDR) — whitelist all from this process
         if proc:
             return True
-        continue  # no filter criteria at all — skip
+        continue
     return False
 
 
@@ -68,22 +134,21 @@ def check(state: dict, cfg: dict) -> list[Alert]:
     for line in out.splitlines():
         if "127.0.0.1" in line or "::1" in line:
             continue
-        # ss -tnp output: Local:Port  Peer:Port  users:((...))
-        # Take the second IP:port pair as the peer (remote) address
         pairs = re.findall(r"(\d{1,3}(?:\.\d{1,3}){3}):(\d+)", line)
         if len(pairs) < 2:
             continue
-        local_ip, local_port = pairs[0]  # noqa: F841 (local side, not used for alerts)
+        local_ip, local_port = pairs[0]
         dest_ip, dest_port = pairs[1]
         dest_port = int(dest_port)
         if is_private_or_loopback(dest_ip):
             continue
         owner = _process_owner(line)
+        pid = _get_pid(line)
         conn_key = f"{dest_ip}:{dest_port}:{owner}"
         seen_keys.add(conn_key)
 
-        # Skip whitelisted destinations (Telegram, etc.)
-        if _is_whitelisted(dest_ip, dest_port, owner, cfg):
+        # Skip whitelisted destinations (Telegram, Hermes, git-from-Hermes, etc.)
+        if _is_whitelisted(dest_ip, dest_port, owner, pid, cfg):
             continue
 
         first_seen = conn_tracker.get(conn_key)

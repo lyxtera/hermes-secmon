@@ -16,6 +16,12 @@ CRITICAL_FILES = [
     "/etc/ssh/sshd_config",
     "/etc/hosts",
     "/etc/resolv.conf",
+    "/etc/secmon/config.yaml",
+    "/root/.hermes/plugins/secmon/src/secmon/checks/outbound.py",
+    "/root/.hermes/plugins/secmon/src/secmon/audit/file_integrity.py",
+    "/root/.hermes/plugins/secmon/src/secmon/modes/audit_mode.py",
+    "/root/.hermes/plugins/secmon/src/secmon/audit/__init__.py",
+    "/root/.hermes/plugins/secmon/src/secmon/checks/__init__.py",
 ]
 
 DEBIAN_SUID_WHITELIST = {
