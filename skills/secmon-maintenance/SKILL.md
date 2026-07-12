@@ -703,35 +703,176 @@ if transients:
 **Root cause:** `fail2ban_min_new_bans` threshold too low for server's normal traffic
 **Fix:** Increase threshold in config (typical busy server: 50+)
 
-### Outbound Connections — Process-Based Whitelisting
-**Symptom:** "Direct-IP HTTPS session to Cloudflare:443 (hermes)" or "New outbound from privileged process hermes"
-**Root cause:** The Hermes agent makes API calls to providers (OpenRouter via Cloudflare, Telegram Bot API) that appear as direct-IP HTTPS connections to secmon's outbound monitor.
-**Fix (prefer over IP ranges):** Add a **process-only** entry to `whitelist.outbound_destinations` — no hardcoded IPs needed:
+## Config Hardening — Immutable Protection
+
+After tuning secmon (whitelists, thresholds, detection logic), **protect the config and check logic from tampering** by a root-level attacker. A malicious actor who gains root can trivially modify `/etc/secmon/config.yaml` to whitelist their own processes or patch `outbound.py` to disable detection.
+
+### Strategy — Two Layers
+
+**Layer 1: Kernel-enforced immutable flag (`chattr +i`)**
+
+Makes files undeletable and unmodifiable even by root. The kernel prevents `write()`, `unlink()`, `truncate()`, and `rename()` until the flag is removed.
+
+```bash
+chattr +i /etc/secmon/config.yaml
+chattr +i /root/.hermes/plugins/secmon/src/secmon/checks/outbound.py
+chattr +i /root/.hermes/plugins/secmon/src/secmon/audit/file_integrity.py
+chattr +i /root/.hermes/plugins/secmon/src/secmon/modes/audit_mode.py
+chattr +i /root/.hermes/plugins/secmon/src/secmon/audit/__init__.py
+chattr +i /root/.hermes/plugins/secmon/src/secmon/checks/__init__.py
+```
+
+**Layer 2: Integrity monitoring via secmon's own audit**
+
+Add all protected paths to `CRITICAL_FILES` in `file_integrity.py`. Every `--audit` run computes SHA-256 of each file and compares against the stored baseline — if someone strips `chattr -i`, modifies the file, and re-locks it, the next audit fires **🔴 CRITICAL — file_changed**.
+
+```python
+CRITICAL_FILES = [
+    ...
+    "/etc/secmon/config.yaml",
+    "/root/.hermes/plugins/secmon/src/secmon/checks/outbound.py",
+    "/root/.hermes/plugins/secmon/src/secmon/audit/file_integrity.py",
+    "/root/.hermes/plugins/secmon/src/secmon/modes/audit_mode.py",
+    "/root/.hermes/plugins/secmon/src/secmon/audit/__init__.py",
+    "/root/.hermes/plugins/secmon/src/secmon/checks/__init__.py",
+]
+```
+
+### Helper for Legitimate Updates
+
+A script at `/usr/local/bin/secmon-unlock` temporarily removes the immutable flags, runs the command, then re-locks everything:
+
+```bash
+secmon-unlock vim /etc/secmon/config.yaml
+secmon-unlock hermes update
+```
+
+```bash
+#!/bin/bash
+SECMON_FILES=(
+    /etc/secmon/config.yaml
+    /root/.hermes/plugins/secmon/src/secmon/checks/outbound.py
+    /root/.hermes/plugins/secmon/src/secmon/audit/file_integrity.py
+    /root/.hermes/plugins/secmon/src/secmon/modes/audit_mode.py
+    /root/.hermes/plugins/secmon/src/secmon/audit/__init__.py
+    /root/.hermes/plugins/secmon/src/secmon/checks/__init__.py
+)
+for f in "${SECMON_FILES[@]}"; do chattr -i "$f" 2>/dev/null || true; done
+"$@"
+EXIT=$?
+for f in "${SECMON_FILES[@]}"; do chattr +i "$f" 2>/dev/null || true; done
+exit $EXIT
+```
+
+**Pitfall — edit conflicts:** After locking `file_integrity.py` with `chattr +i`, you cannot patch it again (the kernel denies the write). You must `chattr -i` first, edit, then re-lock. The `secmon-unlock` helper handles this automatically.
+
+### Outbound Connections — Process Whitelisting Strategies
+
+Three approaches, ordered from most to least recommended:
+
+#### Strategy 1 (Best) — Parent-Process Tree Constraint
+
+Whitelist process connections **only when spawned by a trusted parent** (e.g., `hermes`). This prevents malicious actors from using a whitelisted binary (like `git`) for exfiltration — a standalone `git push` to a C2 server has no `hermes` ancestor and will still alert.
+
+**Config:**
+```yaml
+whitelist:
+  outbound_destinations:
+    - process: hermes                        # blanket — Hermes itself (API calls)
+    - process: git-remote-http
+      parent_process: hermes                 # git from Hermes = OK
+    - process: git-remote-https
+      parent_process: hermes                 # git from Hermes = OK
+```
+
+**Code pattern** (`src/secmon/checks/outbound.py`):
+
+Three helper functions trace the process tree via `/proc`:
+
+```python
+def _get_pid(line: str) -> int:
+    """Extract PID from ss -tnp output:  users:(("name",pid=1234,fd=N))"""
+    m = re.search(r'pid=(\d+)', line)
+    return int(m.group(1)) if m else 0
+
+def _get_comm(pid: int) -> str:
+    """Read process command name from /proc/pid/comm."""
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip()
+    except (OSError, IOError):
+        return ""
+
+def _get_ppid(pid: int) -> int:
+    """Read parent PID from /proc/pid/status."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, IOError, ValueError):
+        pass
+    return 0
+
+def _ancestor_has(pid: int, target: str) -> bool:
+    """Walk process tree upward checking if any ancestor's comm matches target.
+    Max depth 32 to prevent infinite loops. Excludes the process itself."""
+    depth = 0
+    ppid = _get_ppid(pid)
+    while ppid > 0 and depth < 32:
+        comm = _get_comm(ppid)
+        if comm == target:
+            return True
+        ppid = _get_ppid(ppid)
+        depth += 1
+    return False
+```
+
+The whitelist check then tests both `process` (owner match) and `parent_process` (ancestor chain):
+
+```python
+parent_proc = entry.get("parent_process", "")
+if parent_proc:
+    if not pid or not _ancestor_has(pid, parent_proc):
+        continue  # parent not in chain — don't whitelist
+```
+
+**Why this beats strategies 2 and 3:**
+| Attack scenario | Blanket (S2) | CIDR (S3) | Parent-tree (S1) |
+|---|---|---|---|
+| Attacker runs `git push` to steal data | ❌ Silent | ✅ Alerts (non-GitHub IP) | ✅ Alerts (no hermes ancestor) |
+| Attacker runs `git push` to stolen GitHub repo | ❌ Silent | ❌ Silent | ✅ Alerts (no hermes ancestor) |
+| Legit Hermes `git clone` to any host | ✅ Silent | ❌ May alert if IP unknown | ✅ Silent (hermes ancestor) |
+| Provider IPs change | ✅ Silent | ❌ Must update CIDRs | ✅ Silent (process-based) |
+
+**:warning: Pitfall — test process ancestry on live system.** A parent-chain walker that only returns `True` when the process tree actually contains the target is correct but can surprise you. On this server, even `python3 test.py` runs as `python3 → bash → hermes → systemd`, so a test that `_ancestor_has(current_pid, 'hermes')` returns `True` — because the test process is itself spawned by the Hermes gateway. This is correct behavior for production, but unit tests using fake PIDs (99999, which doesn't exist in /proc) correctly return `False`. Always test with a known-non-existent PID for the negative case.
+
+#### Strategy 2 (Fallback) — Blanket Process Whitelist
+
+**Use only for processes that can never be hijacked (e.g., `hermes` itself).** Do NOT use for generic tools like `git`, `curl`, `wget` — a malicious actor can trivially use them for exfiltration.
 
 ```yaml
 whitelist:
   outbound_destinations:
-    - process: hermes   # whitelist ALL outbound from this process
+    - process: hermes   # whitelist ALL outbound from Hermes
 ```
 
-This requires a **code change** in `_is_whitelisted()` (`src/secmon/checks/outbound.py`). Originally, process-only entries (no IP/CIDR) fell through and never matched. After the fix, a matched process with no IP/CIDR returns `True` — whitelisting all connections from that process.
+Code: a matched process with no `cidr`/`ip`/`parent_process` returns `True`.
 
-**Why process-based is better than IP ranges:**
-| Aspect | IP ranges | Process-based |
-|--------|-----------|---------------|
-| Cloudflare IPs | 1000+ ranges, change frequently | `{process: hermes}` — zero maintenance |
-| Provider switch | Must audit and update all ranges | Works automatically |
-| Other processes | Still affected | Targeted — caddy, sshd still monitored |
+**Why not CDN IP whitelisting?** Cloudflare uses AS13335 with thousands of ranges — they change frequently. Process-name matching is the only solid approach against dynamic CDN infrastructure.
 
-**Test in isolation:**
-```python
-from secmon.checks.outbound import _is_whitelisted
-cfg = {'whitelist': {'outbound_destinations': [{'process': 'hermes'}]}}
-assert _is_whitelisted('104.18.2.115', 443, 'hermes', cfg) == True
-assert _is_whitelisted('104.18.2.115', 443, 'caddy', cfg) == False
+#### Strategy 3 (Not Recommended) — CIDR Whitelist
+
+Only useful when a process legitimately connects to a **fixed, known IP range** and you cannot use parent-tree (e.g., third-party tools). For git processes, GitHub's IP ranges change as they add load balancers, making this high-maintenance.
+
+```yaml
+whitelist:
+  outbound_destinations:
+    - process: git-remote-https
+      cidr: 140.82.112.0/20       # GitHub — but new IPs appear regularly
 ```
 
-**Why not CDN IP whitelisting?** Cloudflare uses AS13335 with thousands of ranges across their CDN. Hardcoding them is fragile — they add/remove ranges frequently. Process-name matching is the only solid approach.\n\n### Baseline Not Updating
+**Pitfall:** GitHub currently publishes 36+ CIDR blocks (including many /32s) for git traffic. Missing one means a false positive. Pull from `api.github.com/meta` to keep up to date.\n\n### Baseline Not Updating
 **Symptom:** Alert keeps firing even after whitelist fix
 **Root cause:** `suid_cache` in state stored old values
 **Fix:** Run `sudo secmon --reset-baseline` or manually clear cache in `/var/lib/secmon/state.json`
