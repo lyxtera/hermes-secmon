@@ -197,7 +197,22 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                     pathname = parts[-1] if len(parts) > 5 else ""
                     if "x" not in perms:
                         continue
-                    if pathname.endswith("(deleted)") and pathname not in ("", "[heap]", "[stack]"):
+                    if pathname == "(deleted)" and len(parts) >= 7:
+                        # Reconstruct the actual file path
+                        real_path = parts[5]  # token before "(deleted)"
+                        # If the file still exists on disk, it's a library upgrade
+                        # artifact (old inode was replaced), not process hollowing
+                        if real_path.startswith("/") and os.path.exists(real_path):
+                            continue
+                        findings.append(
+                            AuditFinding(
+                                "CRITICAL", 3, "proc_hollow_deleted",
+                                f"Deleted executable mapping in pid {pid}: {real_path} (deleted)",
+                                {"pid": pid, "path": real_path},
+                            )
+                        )
+                    elif pathname not in ("", "[heap]", "[stack]") and pathname.endswith("(deleted)"):
+                        # Catch any edge-case (deleted) format not handled above
                         findings.append(
                             AuditFinding(
                                 "CRITICAL", 3, "proc_hollow_deleted",
