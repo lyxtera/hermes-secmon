@@ -127,6 +127,8 @@ When a script sends via `sendRichMessage` (Pipeline C), it needs:
 
 **Real example from this session:** `whitelist.port_removed` (static port suppression) was added to `network.py` but never made it to the README's exclusion table. The process-name variant (`port_removed_processes`) was documented in the triage reference, but the static port list was not — discover this by diffing `git diff HEAD~26..HEAD -- src/` for new config `.get()` calls and cross-referencing against the README.
 
+**Full README audit (not just new configs):** When the README has fallen significantly behind (many commits since last edit), don't just spot-check. Do a systematic diff-based audit: find the last README commit, collect every non-chore change since, and cross-reference each against every README section. See `references/readme-sync-audit.md` for the full procedure, cross-reference table, and a real example from this session (18 commits, 7 stale sections fixed).
+
 ## Workflow Pattern
 
 ### 1. Sync Secmon with Remote
@@ -692,6 +694,58 @@ if transients:
 ```
 
 **Pitfall:** Use `port_removed_processes` for browser/agent ephemeral ports. Static `port_removed` works for truly fixed service ports, but ephemeral ports change every run — next session gets different numbers. Always use process-name matching for transient processes.
+
+### Proc Hollow Deleted — Library Upgrade Artifact
+
+**Symptom:** 🔴 CRITICAL — `proc_hollow_deleted`: "Deleted executable mapping in pid N: (deleted)" for long-running system processes (systemd, dbus-daemon, systemd-journal).
+
+**Root cause:** When a shared library is upgraded via `apt upgrade`, the package manager replaces the `.so` file with a new inode. Any process that had the old library loaded **before** the upgrade still holds a mapping to the now-deleted old inode. The kernel appends `(deleted)` to the mapping. This is **not** process hollowing — it's a stale mapping from a routine library update.
+
+**How to distinguish from real process hollowing:**
+
+| Signal | Library upgrade (benign) | Real hollowing |
+|--------|------------------------|----------------|
+| Mapped file | `.so` path under `/usr/lib/` | Binary path or anonymous mapping |
+| File on disk now? | Yes — same path, new inode | No — file was deleted and removed |
+| Process | Long-running system daemons (systemd, dbus) | Typically new or short-lived process |
+| Multiple processes? | Yes — all processes that loaded the old lib | Isolated to one process |
+| Timing | After `apt upgrade` or `dist-upgrade` | No package activity |
+
+**Verification:**
+```bash
+# Check if file still exists on disk (different inode)
+ls -la $(awk '/\(deleted\)/ {print $6}' /proc/1/maps | head -1)
+# File exists → library upgrade, benign
+
+# Check when the library was upgraded
+grep "<library-name>" /var/log/dpkg.log | grep upgrade
+
+# List all processes with the stale mapping
+for pid in $(ls /proc/ | grep -E '^[0-9]+$'); do
+  if awk '/\(deleted\)/{print $6}' /proc/$pid/maps 2>/dev/null | grep -q liblzma; then
+    echo "PID $pid ($(cat /proc/$pid/comm))"
+  fi
+done
+# Multiple long-running system processes → batch library upgrade
+```
+
+**Fix (code patch in `src/secmon/audit/process.py`):**
+
+The check flagged ANY executable `(deleted)` mapping. Fix: verify the underlying file still exists on disk — if yes, it's a library upgrade artifact, skip it:
+
+```python
+if pathname == "(deleted)" and len(parts) >= 7:
+    real_path = parts[5]  # token before "(deleted)"
+    # File still exists on disk → library upgrade artifact
+    if real_path.startswith("/") and os.path.exists(real_path):
+        continue
+    # Truly deleted binary — flag it
+    findings.append(AuditFinding(...))
+```
+
+**Pitfall:** The raw `/proc/pid/maps` line format splits `path (deleted)` into two tokens with `line.split()`. The actual path is `parts[5]`, and `(deleted)` is `parts[-1]`. Matching `pathname.endswith("(deleted)")` only captures the bare `(deleted)` token — the finding message shows no actual path. Always reconstruct `parts[5]` as the real path.
+
+**Dual-location fix:** Patch the source in the plugin repo (`~/.hermes/plugins/secmon/src/secmon/audit/process.py`). If the code is also installed at `/opt/secmon/src/secmon/audit/process.py` (e.g. via symlink or install.sh), update both locations.
 
 ### SUID Binary Alerts
 **Symptom:** "Unexpected SUID: /usr/bin/pkexec" or similar
