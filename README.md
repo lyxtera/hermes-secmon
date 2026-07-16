@@ -10,7 +10,7 @@ Designed to run as root on a single VPS. Silent when normal — output appears o
 - **Hermes Gateway notifications** — cron jobs capture script stdout and deliver to Telegram, Discord, Slack, and other configured platforms
 - **Hermes Cron scheduling** — no-agent watchdog jobs for tick (15 min), audit (6 h), and daily digest (08:00 UTC)
 - **11 metrics** — SSH failures, attacker IPs/subnets, fail2ban bans, botnet rules, kernel errors, listening ports, and more
-- **9 realtime threat checks** — self-protection, brute-force bursts, new fail2ban bans, port changes, unauthorized SSH sessions, suspicious/C2 outbound connections, etc.
+- **8 realtime threat checks** — brute-force bursts, new fail2ban bans, port changes, unauthorized SSH sessions, suspicious/C2 outbound connections, etc.
 - **Audit-to-alert bridge** — CRITICAL/HIGH deep-audit findings dispatched through the same dedup/log/stdout pipeline
 - **Advanced compromise detection** — process hollowing, persistence baseline diff, process lineage, secret exposure, eBPF delta watcher, kernel tamper
 - **Two-gate anomaly detection** — sigma threshold + minimum absolute delta with rolling baselines (Bessel's correction)
@@ -69,10 +69,11 @@ The installer will:
 1. Create `/opt/secmon` → symlink to your checkout
 2. Create a venv at `/opt/secmon/venv` and `pip install -e` the package (registers the Hermes plugin entry point)
 3. Symlink `/usr/local/bin/secmon` → venv entry point
-4. Create `/etc/secmon`, `/var/lib/secmon`, log files with secure permissions
-5. Run `hermes plugins enable secmon` (when Hermes CLI is available)
-6. Register three Hermes Cron no-agent jobs (tick, audit, daily)
-7. Install BPF auditd rules to `/etc/audit/rules.d/secmon-bpf.rules` when `auditd` is present (best-effort `augenrules --load`)
+4. Create `~/.hermes/secmon/`, `/var/lib/secmon`, log files with secure permissions
+5. Symlink `/etc/secmon` → `~/.hermes/secmon/` for backwards compatibility
+6. Run `hermes plugins enable secmon` (when Hermes CLI is available)
+7. Register three Hermes Cron no-agent jobs (tick, audit, daily)
+8. Install BPF auditd rules to `/etc/audit/rules.d/secmon-bpf.rules` when `auditd` is present (best-effort `augenrules --load`)
 
 ### Manual installation
 
@@ -115,7 +116,7 @@ ln -sf /opt/secmon/venv/bin/secmon /usr/local/bin/secmon
 
 ```bash
 mkdir -p /var/lib/secmon/snapshots
-mkdir -p /etc/secmon
+mkdir -p ~/.hermes/secmon
 touch /var/log/security-monitor.log
 touch /var/log/secmon-botnet.log
 chmod 700 /var/lib/secmon
@@ -124,11 +125,12 @@ chmod 700 /var/lib/secmon
 #### 5. Configure the monitor
 
 ```bash
-cp config.yaml.example /etc/secmon/config.yaml
-chmod 600 /etc/secmon/config.yaml
+cp config.yaml.example ~/.hermes/secmon/config.yaml
+chmod 600 ~/.hermes/secmon/config.yaml
+ln -sf ~/.hermes/secmon/config.yaml /etc/secmon/config.yaml
 ```
 
-Edit `/etc/secmon/config.yaml` — set `whitelist.own_ip` and `hermes.deliver_target`.
+Edit `~/.hermes/secmon/config.yaml` — set `whitelist.own_ip` and `hermes.deliver_target`.
 
 #### 6. Enable the Hermes plugin
 
@@ -252,7 +254,7 @@ CTA: /secmon audit   (or /secmon_remediate self_protection_fix_permissions, etc.
 - **Silent when normal:** empty stdout on a clean tick = no notification.
 - **Actionable:** each alert line includes a remediation hint; wrappers append a `What to do next` section and a single CTA command.
 
-Configure the delivery target in `/etc/secmon/config.yaml`:
+Configure the delivery target in `~/.hermes/secmon/config.yaml`:
 
 ```yaml
 hermes:
@@ -314,9 +316,13 @@ secmon -v --check    # verbose logging
 
 Configuration is loaded in priority order:
 
-1. Environment variables (`SECMON_*`)
-2. YAML config file (`/etc/secmon/config.yaml` or `SECMON_CONFIG_PATH`)
-3. Built-in defaults
+1. `--config path` CLI flag
+2. `SECMON_CONFIG_PATH` environment variable
+3. `/etc/secmon/config.yaml` (symlink → `~/.hermes/secmon/config.yaml`)
+4. `~/.hermes/secmon/config.yaml` (canonical path, auto-backed up by `hermes backup`)
+5. Built-in defaults
+
+The canonical config location is `~/.hermes/secmon/config.yaml`. On first install, `install.sh` creates a symlink `/etc/secmon/config.yaml → ~/.hermes/secmon/config.yaml` for backwards compatibility.
 
 Per-metric threshold overrides via environment:
 
@@ -336,13 +342,14 @@ Secmon scanners are intentionally aggressive. Use these config options in `white
 |-------------|---------|---------|
 | `whitelist.hidden_tmp_entries` | Ignore known hidden files in `/tmp` (VNC X11 sockets) | `[".font-unix", ".XIM-unix"]` |
 | `whitelist.tmpfs_mounts` | Expected tmpfs mounts (systemd `/var/tmp`) | `["/var/tmp"]` |
-| `whitelist.secret_exclude_paths` | Skip operational config files in secret pattern scan | `["/root/.hermes/config.yaml"]` |
+| `whitelist.secret_exclude_paths` | Skip operational config files in secret pattern scan. Supports directory prefixes (e.g. `/root/.hermes/state-snapshots` covers all files within) | `["/root/.hermes/config.yaml"]` |
 | `whitelist.port_removed` | Suppress port-removed alerts for specific ports | `[80, 443]` |
 | `whitelist.port_removed_processes` | Suppress port-removed alerts when process is a known transient (e.g. ephemeral browser/agent ports) | `["firefox", "hermes"]` |
 | `whitelist.proc_hollow_exclude_pids` | Exclude specific PIDs from anonymous mapping checks | `[449]` |
-| `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node"]` |
+| `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node", "unattended-upgr"]` |
+| *(auto)* | `proc_hollow_deleted` auto-suppresses `(deleted)` mappings when the file still exists on disk — library upgrade artifacts are silently skipped | Built-in, no config needed |
 | `whitelist.persist_exclude_prefixes` | Ignore secmon/hermes own systemd units in persistence diff | `["/etc/systemd/system/secmon-"]` |
-| `whitelist.outbound_destinations` | Suppress outbound alerts for known-good destinations. Each entry supports optional `cidr`, `ip`, and/or `process` matching | See below |
+| `whitelist.outbound_destinations` | Suppress outbound alerts for known-good destinations. Each entry supports optional `cidr`, `ip`, `process`, and/or `parent_process` matching | See below |
 | `dns.expected_nameservers` | Known-good DNS servers to suppress NC-3 alerts | `["1.1.1.1"]` |
 | `hardening.skip_root_login_check` | Allow root SSH login without audit warning | `True` |
 | `hardening.skip_fw_policy_check` | Don't flag INPUT ACCEPT on remote servers (lockout risk) | `True` |
@@ -392,13 +399,31 @@ whitelist:
       reason: "Telegram MTProto API"
     - ip: "1.2.3.4"
       reason: "monitoring server"
+    - process: "git-remote-http"
+      parent_process: "hermes"
+      reason: "Hermes-originated git operations (blocks shell-spawned git exfiltration)"
+    - process: "git-remote-https"
+      parent_process: "hermes"
+      reason: "Hermes-originated git operations"
 ```
 
-Each entry supports optional `cidr`, `ip`, and/or `process` matching. A connection is suppressed if it matches **any** entry. Omit `process` to match any process on that CIDR/IP.
+Each entry supports optional `cidr`, `ip`, `process`, and/or `parent_process` matching. A connection is suppressed if it matches **any** entry. Omit `process` to match any process on that CIDR/IP.
 
-#### Tick gap auto-detection
+When `parent_process` is set, the whitelist entry only applies when an ancestor of the connecting process matches the given name — this prevents git-based data exfiltration from a shell/SSH session while allowing legitimate Hermes-originated git operations.
 
-The self-protection check's missed-tick threshold is dynamically calculated from the actual cron schedule — no hardcoded value. It reads `~/.hermes/cron/jobs.json` and sets the alert threshold to **2× the expected interval**. A 15-minute cron gets a 30-minute grace; a 30-minute cron gets a 60-minute grace. Falls back to 15 minutes if the job can't be found.
+#### Config immutability
+
+The config file (`~/.hermes/secmon/config.yaml`) and secmon source files are tracked in the file integrity layer's CRITICAL_FILES list. After tuning, you can lock the config file with the immutable bit to prevent tampering:
+
+```bash
+chattr +i ~/.hermes/secmon/config.yaml
+```
+
+Removing the immutable bit (`chattr -i`) is required before editing — this provides an audit trail via `journalctl` (AUDIT_FANOTHY or inode metadata changes).
+
+#### Self-protection module removed
+
+The `self_protection.py` module (tick gap detection, code/symlink integrity, config tamper checks) was **deleted** in July 2026. It generated daily false CRITICAL alerts because the Hermes cron scheduler skips overlapping runs of the same job ID — a slow tick (>15 min) during deep audits dropped the next run, creating an apparent 30-min gap. Additionally, all checks were trivially bypassable by any root-level actor. See `skills/hermes-secmon/references/self-protection-removed.md` for the full rationale. The `last_tick` timestamp is still persisted for record-keeping but no longer generates alerts.
 
 ## Project layout
 
