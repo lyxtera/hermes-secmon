@@ -310,6 +310,11 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                 )
             )
         elif "(deleted)" in exe:
+            # Strip " (deleted)" and check if the file still exists — package
+            # upgrade artifact, not compromise
+            real_path = exe.replace(" (deleted)", "").strip()
+            if real_path.startswith("/") and os.path.exists(real_path):
+                continue
             findings.append(
                 AuditFinding(
                     "CRITICAL", 3, "proc_root_deleted",
