@@ -174,9 +174,27 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                             continue
                         if _is_excluded(fp, exclude_paths):
                             continue
+                        # Skip template/example files — these are by definition
+                        # non-secret placeholders (e.g. .env.example) and must
+                        # never be reported as exposed secrets.
+                        if fname.endswith(".example") or ".example." in fname:
+                            continue
                         sample = open(fp, encoding="utf-8", errors="replace").read(8000)
                         for pat in SECRET_PATTERNS:
-                            if pat.search(sample):
+                            m = pat.search(sample)
+                            if not m:
+                                continue
+                            # Require an actual secret value, not a bare label or
+                            # placeholder. Extract the matched line and check that
+                            # something real follows the assignment.
+                            line = sample[max(0, m.start() - 200):m.end() + 200]
+                            # strip to the matched key line
+                            key_line = line.splitlines()[-1] if "=" in line else line
+                            val = key_line.split("=", 1)[-1].strip().strip("\"'")
+                            placeholder = val in ("", "***", "CHANGEME", "<your-key-here>",
+                                                  "your-key-here", "placeholder", "REPLACE_ME",
+                                                  "TODO", "xxxx", "xxxxxx")
+                            if not placeholder and len(val) >= 8:
                                 findings.append(
                                     AuditFinding(
                                         "HIGH", 6, "secret_pattern",
