@@ -947,6 +947,40 @@ def _is_excluded(fp: str, exclude_paths: set[str]) -> bool:
 Then change both exclusion lines in `_scan_secrets()` from `if fp in exclude_paths:` to `if _is_excluded(fp, exclude_paths):`. This makes excluding `/root/.hermes/state-snapshots` automatically cover everything under it.
 **Prevention:** When adding a directory to `secret_exclude_paths`, always verify it actually excludes subfiles by running `--audit` after the change.
 
+### Secret Pattern — Placeholder / `.env.example` False Positive
+
+**Symptom:** `secret_pattern` fires on a template file like `/path/.env.example` containing `GROQ_API_KEY=*** ` (empty placeholder) or `API_KEY=<your-key-here>`. Looks scary (HIGH) but is a non-secret example file.
+
+**Root cause (two bugs in `src/secmon/audit/threat_intel.py`):**
+1. `SECRET_PATTERNS` includes `re.compile(r"api[_-]?key\s*[:=]", re.I)` which matches the **bare key label** — there is no check that an actual secret value follows the `=`.
+2. The content scan at the bottom of `_scan_secrets()` iterates **every** file (no filename filter), so `.env.example` / `*.example` templates get scanned and flagged even though they're by definition non-secret.
+
+**Fix (patch `threat_intel.py` — the fix applied this session, 2026-07-19):**
+```python
+# In the content-scan loop, before reading:
+if fname.endswith(".example") or ".example." in fname:
+    continue
+sample = open(fp, encoding="utf-8", errors="replace").read(8000)
+for pat in SECRET_PATTERNS:
+    m = pat.search(sample)
+    if not m:
+        continue
+    # Require a real value, not a bare label / placeholder
+    line = sample[max(0, m.start() - 200):m.end() + 200]
+    key_line = line.splitlines()[-1] if "=" in line else line
+    val = key_line.split("=", 1)[-1].strip().strip("\"'")
+    placeholder = val in ("", "***", "CHANGEME", "<your-key-here>",
+                          "your-key-here", "placeholder", "REPLACE_ME",
+                          "TODO", "xxxx", "xxxxxx")
+    if not placeholder and len(val) >= 8:
+        findings.append(AuditFinding("HIGH", 6, "secret_pattern",
+                                     f"Secret material pattern in {fp}"))
+        break
+```
+This keeps real secrets (private keys, AWS secrets, actual API keys) flagged while silencing template placeholders. Note: the scan still reads only the first 8000 chars and only flags the first matching pattern per file.
+
+**Test recipe:** `references/secret-pattern-placeholder.md` — self-contained 4-case check (placeholder → no flag; real GROQ key / AWS secret / PEM key → flag). Run it after any `threat_intel.py` secret-scan change.
+
 ### Hidden tmp — BPF / Executable Investigation
 **Symptom:** `hidden_tmp` fires for a hidden entry in `/dev/shm` or `/tmp` (e.g., `.bt`)
 **Investigation pattern:**
@@ -1010,3 +1044,4 @@ ps aux | grep 35753       # ❌ Not found
 - Audit findings triage: `references/audit-findings-triage.md` — port_removed, secret_pattern, persist_modified, sec_updates, sysctl, and general triage workflow
 - BPF watcher reference: `references/bpf-watcher.md` — comprehensive check ID table, classifier rules, stable key format, state machine transitions
 - Concurrent state-file race: `references/concurrent-state-file-race.md` — how concurrent secmon processes (--tick + --audit) can clobber last_tick via the read-modify-write pattern on state.json, and the fcntl.flock() fix (now historical — the self_protection check that read last_tick was removed, so the race no longer produces alerts)
+- Secret pattern placeholder test: `references/secret-pattern-placeholder.md` — 4-case regression check (`.env.example` placeholder → no flag; real keys/PEM → flag) for the `threat_intel.py` secret-scan fix
