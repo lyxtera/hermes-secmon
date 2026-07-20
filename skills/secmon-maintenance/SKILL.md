@@ -455,6 +455,17 @@ cat ~/.hermes/cron/output/<job-id>/latest.md
 
 Confirm with user, then check Telegram for audit results (should no longer show the false positive).
 
+**Pitfall: leftover test scaffolding produces real CRITICAL alerts.** When validating the secret-scan logic (e.g. writing a fake `-----BEGIN RSA PRIVATE KEY-----` block to `/tmp/key.pem` or a `tempfile.mkdtemp()` dir to confirm a rule still fires), that file is a **genuine** `secret_world_readable` / `secret_pattern` hit. If not deleted, the *next* tick will flag your own test artifact as `🔴 CRITICAL`. This is expected behaviour — secmon is right, the file is real on disk.
+
+**Rule:** Always clean up test fixtures immediately after the validation run:
+```bash
+# after any local test that writes key.pem / *.pem / .env into /tmp
+rm -rf /tmp/tmpXXXXXX          # the temp dir your test created
+rm -f /tmp/key.pem /tmp/*.pem  # any stray key fixtures
+find /tmp -name '*.pem' -o -name 'key.pem' 2>/dev/null   # sweep to confirm none left
+```
+Never write test secrets to a persistent path. Use `tempfile.mkdtemp()` and `rm -rf` it in the same session. A 12-byte "MIIEogIBAAKCAQEA" test vector still trips the PEM rule — it must be removed, not left for the nightly tick.
+
 ## Plugin Skill Bundling
 
 Hermes plugins can **bundle skill packs** — skills that ship with the plugin and live in the plugin's directory tree, not `~/.hermes/skills/`. They're git-tracked by default since they're inside the plugin repo.
