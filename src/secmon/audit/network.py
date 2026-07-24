@@ -76,6 +76,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
 
     # ARP anomalies
     arp = run_cmd_safe(["ip", "neigh", "show"])
+    mac_whitelist = set(cfg.get("whitelist", {}).get("mac_whitelist", []))
     macs: dict[str, list[str]] = {}
     for line in arp.splitlines():
         parts = line.split()
@@ -83,7 +84,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             ip, mac = parts[0], parts[4]
             macs.setdefault(mac, []).append(ip)
     for mac, ips in macs.items():
-        if len(ips) > 1:
+        if len(ips) > 1 and mac not in mac_whitelist:
             findings.append(
                 AuditFinding("MEDIUM", 2, "NC-2-arp", f"Duplicate MAC {mac}: {ips}")
             )
