@@ -75,6 +75,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
     # NC-4: TLS certificate hygiene
     cert_dirs = ["/etc/ssl/certs", "/etc/letsencrypt/live"]
     now = datetime.now(timezone.utc)
+    cert_exclude = set(cfg.get("hardening", {}).get("cert_exclude_paths", []))
     for cert_dir in cert_dirs:
         if not os.path.isdir(cert_dir):
             continue
@@ -91,6 +92,8 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                         tzinfo=timezone.utc
                     )
                     days = (exp - now).days
+                    if path in cert_exclude:
+                        continue
                     if days < 0:
                         findings.append(
                             AuditFinding("HIGH", 7, "NC-4-expired", f"Expired cert: {path}")
@@ -130,8 +133,8 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         findings.append(
             AuditFinding("LOW", 7, "NC-10-nodebsums", "debsums not installed (recommended)")
         )
-    else:
-        bad = run_cmd_safe(["debsums", "-c"], timeout=120)
+    elif not cfg.get("hardening", {}).get("skip_debsums_check", False):
+        bad = run_cmd_safe(["debsums", "-c"], timeout=60)
         if bad.strip():
             critical_pkgs = ("openssh", "sudo", "libc", "systemd")
             for line in bad.splitlines()[:20]:

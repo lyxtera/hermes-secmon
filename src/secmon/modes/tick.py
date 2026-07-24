@@ -77,8 +77,11 @@ def run_tick(state: dict, cfg: dict) -> int:
     now = utcnow()
     last_daily = parse_iso(ms.get("last_daily"))
     if now.hour >= 8 and (not last_daily or last_daily.date() < now.date()):
-        run_daily(state, cfg, metrics, silent=True)
-        save_state(cfg, state)
+        try:
+            run_daily(state, cfg, metrics, silent=True)
+            save_state(cfg, state)
+        except Exception as exc:
+            logger.error("daily digest failed: %s", exc)
 
     new = dispatch(alerts, state, cfg)
     save_state(cfg, state)

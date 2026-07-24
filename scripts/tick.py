@@ -6,6 +6,7 @@ structured blocks. Silent exit when no findings.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -13,10 +14,17 @@ from datetime import datetime, timezone
 
 from telegramify_markdown import richify
 
+# Match dispatch-format lines from secmon --tick:
+#   🟡 *MEDIUM* — Enumeration: Invalid User: Username ... → `hint`
+DISPATCH_PATTERN = re.compile(
+    r'^[🟡🟠🔴🔵ℹ️] \*([A-Z]+)\* — ([^:]+): (.+?) → `'
+)
+
 PLUGIN_DIR = os.environ.get(
     "SECMON_PLUGIN_DIR",
     os.path.expanduser("~/.hermes/plugins/secmon")
 )
+
 
 def find_cli() -> str:
     candidates = []
@@ -33,6 +41,7 @@ def find_cli() -> str:
             return c
     return candidates[-1]
 
+
 CLI = find_cli()
 CONFIG = os.environ.get("SECMON_CONFIG_PATH", "/etc/secmon/config.yaml")
 
@@ -40,7 +49,7 @@ cmd = [CLI, "--tick"]
 if os.path.isfile(CONFIG):
     cmd += ["--config", CONFIG]
 
-proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 raw = proc.stdout.strip()
 
 # Silent — no findings
@@ -76,15 +85,29 @@ ROUTINE_PATTERNS = [
     "Username enumeration",
 ]
 
+
 def _is_routine(text: str) -> bool:
     lower = text.lower()
     return any(p.lower() in lower for p in ROUTINE_PATTERNS)
+
+
+def _is_routine_dispatch(line: str) -> bool:
+    """Check if a dispatch-format line is a routine finding to suppress."""
+    m = DISPATCH_PATTERN.match(line)
+    if not m:
+        return False
+    # group(3) is the message part — check for routine patterns
+    return _is_routine(m.group(3))
+
 
 lines = raw.split("\n")
 findings = []
 suppressed = 0
 for line in lines:
     s = line.strip()
+    if not s:
+        continue
+    # Table format (from audit mode)
     if s.startswith("|") and s.endswith("|") and ":---" not in s and "Finding" not in s:
         cells = [c.strip().replace("*", "") for c in s.strip("|").split("|")]
         if len(cells) >= 2:
@@ -93,6 +116,13 @@ for line in lines:
                 suppressed += 1
                 continue
             findings.append(finding_text)
+    # Dispatch format (from tick mode — emoji *SEVERITY* — Label: message → hint)
+    elif DISPATCH_PATTERN.match(s):
+        if _is_routine_dispatch(s):
+            suppressed += 1
+            continue
+        # Include the dispatch line directly in output
+        findings.append(s)
 
 # Build compact markdown
 md_parts = [f"## 🔔 Secmon Tick\n_{timestamp}_"]

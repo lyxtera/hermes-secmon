@@ -414,6 +414,71 @@ Always test the regex against actual secmon output format after any secmon versi
 
 **When to broaden:** If a new routine false positive emerges, add its pattern to `ROUTINE_PATTERNS`. Prefer broader suppression over tuning thresholds -- threshold changes can miss genuine spikes.
 
+### 5b. Diagnose Tick Crashes (Silent Failure Loop)
+
+**The most common root cause of a silently failing tick is a crash inside `run_tick()` that prevents `save_state()` from ever executing.** When the state is not saved, `last_audit_check` stays stale (>6h), which causes every subsequent tick to re-run the full audit — which crashes again — creating an infinite loop.
+
+**Symptom:** `last_audit_check` is >6h old (often 3+ days stale), but `cronjob list` shows `last_status: ok` and `silent (empty output)`. The tick is running but `last_tick` is updated at the start of `run_tick()` (line 29) while `last_audit_check` is only updated after the audit completes (line 72). If the tick crashes between lines 29 and 72, `last_tick` is saved but `last_audit_check` is not — so the next tick tries the audit again.
+
+**Diagnostic checklist:**
+
+```bash
+# 1. Check state timestamps
+python3 -c "
+import json
+d = json.load(open('/var/lib/secmon/state.json'))
+ms = d.get('monitor_state', {})
+print('last_tick:', ms.get('last_tick'))
+print('last_audit_check:', ms.get('last_audit_check'))
+print('last_anomaly_check:', ms.get('last_anomaly_check'))
+print('last_audit_score:', d.get('last_audit_score'))
+print('last_daily:', ms.get('last_daily'))
+"
+
+# 2. Run tick with --verbose to surface the crash
+timeout 300 /root/.hermes/plugins/secmon/venv/bin/secmon --tick --verbose 2>&1 | tail -10
+
+# 3. Check if a secmon process is currently stuck
+ps aux | grep secmon | grep -v grep
+cat /proc/<pid>/stack 2>/dev/null   # check what syscall it's stuck on
+```
+
+**Known crash patterns:**
+
+| Crash | Cause | Fix |
+|-------|-------|-----|
+| `ValueError: Unknown format code 'd' for object of type 'float'` in `output.py:121` | `{delta:+d}` format specifier on a float. `delta = val - mean` where `mean` is a float from baseline. | Change `{delta:+d}` → `{int(delta):+d}` in all 3 occurrences in `format_daily_digest()`. |
+| `subprocess.TimeoutExpired: debsums -c` | `run_cmd_safe` default timeout is 120s. `debsums -c` on a slow system (RPi) can take the full 120s. The audit runs inside the tick every 6h. | Bump tick.py subprocess timeout from 120 → 180s (or 240s for slow systems). Or run `debsums` once manually to warm the cache. |
+| `bpftool -j cgroup show /` fatal error (rc=255) | bpftool version mismatch or missing cgroupv2 support. | `bpftool --version` to check. If bpftool 7.x, the `cgroup show` subcommand syntax changed. |
+| `last_anomaly_check: None` persisting | Anomaly detection has never completed successfully. Usually a side-effect of the crash patterns above. | Fix the underlying crash, then the anomaly check runs as part of the tick. |
+
+**Breaking the infinite loop manually:**
+
+```bash
+# 1. Fix the crash first (see table above), then run a single tick to catch up:
+timeout 300 /root/.hermes/plugins/secmon/venv/bin/secmon --tick --config /etc/secmon/config.yaml --verbose 2>&1 | tail -10
+
+# 2. Verify state was updated:
+python3 -c "
+import json
+d = json.load(open('/var/lib/secmon/state.json'))
+ms = d.get('monitor_state', {})
+print('last_audit_check:', ms.get('last_audit_check'))
+"
+```
+
+If `last_audit_check` is still stale after the manual tick, the crash is still happening — run with `--verbose` and check the tail output for the error.
+
+**Pitfall: `debsums -c` timeout is the most common slow-path.** The compliance check in `compliance.py:134` calls `run_cmd_safe(["debsums", "-c"], timeout=120)`. On a first run or after a system update, debsums checks every file's checksum against the dpkg database — this can take 2+ minutes on a Raspberry Pi. The tick.py wrapper's `subprocess.run(timeout=180)` is usually enough, but if the audit also runs other slow checks, the total can exceed 180s. Monitor with:
+
+```bash
+time debsums -c 2>&1 | wc -l
+```
+
+**Pitfall: `last_anomaly_check: None` is a diagnostic shortcut.** If anomaly detection has never completed, the state file shows `last_anomaly_check: None`. Any tick that crashes before reaching `detect_anomalies()` leaves this as `None`. After fixing the crash, running one manual tick updates it to a real timestamp — confirming the tick now completes the full pipeline.
+
+**Pitfall: The `run_daily()` call in `tick.py` is not wrapped in try/except.** If the daily digest crashes (e.g. the `{delta:+d}` float bug), the exception propagates up through `run_tick()` and prevents `save_state()` from executing. `last_audit_check` is never updated, and the infinite loop continues. The daily digest call should always be wrapped in try/except `Exception` to prevent this.
+
 ### 6. Verify Fixes
 
 **Manual cron script testing (before waiting for cron schedule):**
@@ -431,7 +496,7 @@ python3 daily.py   # exit 0 = silent (no findings)
 /usr/local/bin/secmon --tick --config /etc/secmon/config.yaml 2>&1
 ```
 
-**Pitfall: tick.py subprocess timeout too short.** The cron wrapper at `tick.py` calls `subprocess.run(cmd, ..., timeout=30)`. `secmon --tick` can occasionally take >30s (e.g. when multiple bpftool calls stack). This produces `subprocess.TimeoutExpired` errors in cron logs. Fix: `timeout=30` → `timeout=120`.
+**Pitfall: tick.py subprocess timeout must account for audit duration.** The cron wrapper at `tick.py` calls `subprocess.run(cmd, ..., timeout=180)`. `secmon --tick` can take significantly longer than expected when the 6h audit runs inside it — especially if `debsums -c` (120s internal timeout) or other slow subprocesses stack. If the total audit duration exceeds the tick.py wrapper timeout, the subprocess is killed, `save_state()` never runs, and `last_audit_check` stays stale. Fix: bump `timeout=180` → `timeout=240` on slow systems (RPi), or reduce individual `run_cmd_safe` timeouts in the audit modules.
 
 **Pitfall: internal shell.py defaults also too short.** Even with tick.py's wrapper timeout bumped, `secmon --tick` itself may time out internally before reaching `save_state()` if its subprocess helpers also default to 30s. The three functions in `shell.py` all had `timeout=30` as default — bump them all to 120s.
 

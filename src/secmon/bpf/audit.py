@@ -137,7 +137,7 @@ def bpftool_unpriv_check(state: dict) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     bpf_disabled = run_cmd_safe(["sysctl", "-n", "kernel.unprivileged_bpf_disabled"]).strip()
     scan = collect_bpf_scan()
-    if scan.programs_loaded and bpf_disabled != "1":
+    if scan.programs_loaded and bpf_disabled == "0":
         findings.append(
             AuditFinding(
                 "CRITICAL",

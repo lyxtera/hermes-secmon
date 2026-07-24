@@ -112,13 +112,13 @@ def format_daily_digest(state: dict, metrics: dict[str, int], findings_count: in
             delta = val - mean
             stdev = bl.get("stdev", 0)
             if delta > stdev * 2:
-                delta_str = f"⚠️ {delta:+d}"
+                delta_str = f"⚠️ {int(delta):+d}"
                 if key in METRIC_GUIDANCE:
                     elevated_ctas.append(f"**{label}** is elevated — {METRIC_GUIDANCE[key]}")
             elif delta < -stdev * 2:
-                delta_str = f"✅ {delta:+d}"
+                delta_str = f"✅ {int(delta):+d}"
             else:
-                delta_str = f"{delta:+d}"
+                delta_str = f"{int(delta):+d}"
             val_str = f"`{val:,}`"
             bl_str = f"`{mean:.0f}`"
             lines.append(f"| **{label}** | {val_str} | {bl_str} | {delta_str} |")

@@ -104,7 +104,12 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         opts = parts[3] if len(parts) > 3 else ""
         if fstype == "tmpfs" and mnt not in ("/tmp", "/run", "/dev/shm", "/run/lock"):
             if not mnt.startswith("/run/user"):
-                if mnt not in whitelisted_tmpfs:
+                in_whitelist = False
+                for wl in whitelisted_tmpfs:
+                    if mnt == wl or mnt.startswith(wl + "/"):
+                        in_whitelist = True
+                        break
+                if not in_whitelist:
                     findings.append(
                         AuditFinding("HIGH", 3, "NC-6-tmpfs", f"Unexpected tmpfs: {mnt}")
                     )
