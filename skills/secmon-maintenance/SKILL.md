@@ -8,10 +8,12 @@ triggers:
   - syncing secmon with remote repo
   - unexpected SUID or similar secmon alerts
   - audit report review and findings triage
+  - batch remediation of all audit findings
   - investigating port_removed / secret_pattern / persist_modified findings
   - investigating NC-9-bpf-* watcher findings (persistent BPF programs)
   - promoting known-good BPF programs to baseline
   - configuring BPF watcher thresholds and systemd whitelist
+  - investigating Duplicate MAC / NC-2-arp router false positives
   - applying security upgrades
   - config whitelist tuning (secret_exclude_paths, ignored_ports)
   - suppressing INFO/LOW findings from audit report output
@@ -86,11 +88,14 @@ Also apply this in tick.py for routine SSH suppression — after filtering out r
 ### Scripts that call Telegram API directly
 
 When a script sends via `sendRichMessage` (Pipeline C), it needs:
-- `telegramify-markdown` installed in the **Hermes venv** (`/usr/local/lib/hermes-agent/venv/bin/pip install telegramify-markdown`)
+- `telegramify-markdown` installed in the **secmon plugin's venv** (`/root/.hermes/plugins/secmon/venv/bin/pip install telegramify-markdown`)
+- Script shebang must point to the secmon venv's python: `#!/root/.hermes/plugins/secmon/venv/bin/python3` (NOT `#!/usr/bin/env python3` — `telegramify-markdown` is only in the secmon venv, not the system Python)
 - `TELEGRAM_BOT_TOKEN` sourced from `/root/.hermes/.env`
 - Hardcoded `CHAT_ID` for the destination
 - `deliver: local` on the cron job (to avoid double delivery)
 - `sys.exit(0)` on no-findings (before any send attempt)
+
+**Pitfall — shebang mismatch:** If a script uses `#!/usr/bin/env python3` (system Python), the `telegramify-markdown` import fails with `ModuleNotFoundError` because the module is only installed in the secmon plugin's venv. The cron job reports `last_status: error` with a traceback. Always check shebangs on all three scripts (audit.py, tick.py, daily.py) after a fresh install or git pull.
 
 ### Key files
 
@@ -170,7 +175,7 @@ When secmon triggers false positives (e.g., "Unexpected SUID" alerts):
 - Commit and push to public repo so all users benefit
 - Example: Adding missing paths to `DEBIAN_SUID_WHITELIST` in `file_integrity.py`
 
-**Config tuning (for thresholds):**\n- Edit `~/.hermes/secmon/config.yaml` (no sudo needed — inside Hermes home, auto-backed up via `hermes backup`)\n- Canonical config location: `~/.hermes/secmon/config.yaml`\n- Symlink: `/etc/secmon/config.yaml → ~/.hermes/secmon/config.yaml` for backwards compatibility\n- Config search path (priority order): `--config path` → `SECMON_CONFIG_PATH` env var → `/etc/secmon/config.yaml` (symlink) → `~/.hermes/secmon/config.yaml` → `config.yaml` (cwd)\n  - Note: `/etc/secmon/config.yaml` and `~/.hermes/secmon/config.yaml` point to the same file via symlink — no conflict\n- All three cron scripts (tick.py, audit.py, daily.py) use `SECMON_CONFIG_PATH` or fall back to `/etc/secmon/config.yaml` (symlink) — no code changes needed after consolidation\n- `/opt/secmon/config.yaml` and plugin-local copies (`/root/.hermes/plugins/secmon/config.yaml`) are orphan legacy — remove them whenever found\n- Old `/opt/secmon/config.yaml` had placeholder IPs (`1.1.1.1`) and different thresholds (`fail2ban_min_new_bans: 5`, `min_severity: MEDIUM`) — migrating to `~/.hermes/` config with real settings (`own_ip`, proper whitelists)\n\n**Config recovery from broken symlink / deleted file:**\n\nIf `~/.hermes/secmon/config.yaml` gets deleted and the symlink at `/etc/secmon/` becomes broken:\n\n1. Detect with `ls -la /etc/secmon/config.yaml` — shows broken symlink target\n2. Recreate from the plugin repo's template:\n   ```bash\n   cp /root/.hermes/plugins/secmon/config.yaml.example ~/.hermes/secmon/config.yaml\n   ```\n3. **Must customize** these values for the production server (the placeholder template has dummy IPs):\n\n   | Setting | Production value | Get from |\n   |---------|-----------------|----------|\n   | `own_ip` | Server's public IP | `curl -s ifconfig.me` or `secmon --check` output |\n   | `known_ssh_ips` | Trusted admin IPs | Your SSH client IPs |\n   | `fail2ban_min_new_bans` | 50+ for busy server | Old default 5 is too low |\n   | `min_severity` | `HIGH` | Changed from `MEDIUM` to suppress routine username enum noise |\n   | `port_removed` | Browser ephemeral ports | Check secmon alerts history |\n   | `port_removed_processes` | `[chromium, agent-browser-l]` | Hermes browser agent processes |\n   | `secret_exclude_paths` | Add state-snapshots dir | Directory prefix matching |\n\n4. Fix the symlink: `ln -sf ~/.hermes/secmon/config.yaml /etc/secmon/config.yaml`\n5. Verify: `readlink -f /etc/secmon/config.yaml` must resolve to the real file. Run `secmon --tick --verbose` — it should NOT timeout.\n6. **Pitfall:** Without a valid config file, `secmon --tick` hangs for 30s then times out (the tick.py wrapper catches this, but the cron job fails silently for hours). Always verify tick works after config recovery.\n\n**Production config reference (this server):**\n\n```yaml\nwhitelist:\n  own_ip: 188.130.207.113\n  known_ssh_ips:\n    - 203.0.113.1\n  port_removed:\n    - 45123\n    - 39333\n  port_removed_processes:\n    - chromium\n    - agent-browser-l\n  secret_exclude_paths:\n    - /root/.hermes/state-snapshots\n    - /root/.hermes/config.yaml\n    - /root/.hermes/.env\nrealtime:\n  fail2ban_min_new_bans: 50\nhermes:\n  min_severity: HIGH\n```
+**Config tuning (for thresholds):**\n- Edit `~/.hermes/secmon/config.yaml` (no sudo needed — inside Hermes home, auto-backed up via `hermes backup`)\n- Canonical config location: `~/.hermes/secmon/config.yaml`\n- Symlink: `/etc/secmon/config.yaml → ~/.hermes/secmon/config.yaml` for backwards compatibility\n- Config search path (priority order): `--config path` → `SECMON_CONFIG_PATH` env var → `/etc/secmon/config.yaml` (symlink) → `~/.hermes/secmon/config.yaml` → `config.yaml` (cwd)\n  - Note: `/etc/secmon/config.yaml` and `~/.hermes/secmon/config.yaml` point to the same file via symlink — no conflict\n- All three cron scripts (tick.py, audit.py, daily.py) use `SECMON_CONFIG_PATH` or fall back to `/etc/secmon/config.yaml` (symlink) — no code changes needed after consolidation\n- `/opt/secmon/config.yaml` and plugin-local copies (`/root/.hermes/plugins/secmon/config.yaml`) are orphan legacy — remove them whenever found\n- Old `/opt/secmon/config.yaml` had placeholder IPs (`1.1.1.1`) and different thresholds (`fail2ban_min_new_bans: 5`, `min_severity: MEDIUM`) — migrating to `~/.hermes/` config with real settings (`own_ip`, proper whitelists)\n\n**Config recovery from broken symlink / deleted file:**\n\nIf `~/.hermes/secmon/config.yaml` gets deleted and the symlink at `/etc/secmon/` becomes broken:\n\n1. Detect with `ls -la /etc/secmon/config.yaml` — shows broken symlink target\n2. Recreate from the plugin repo's template:\n   ```bash\n   cp /root/.hermes/plugins/secmon/config.yaml.example ~/.hermes/secmon/config.yaml\n   ```\n3. **Must customize** these values for the production server (the placeholder template has dummy IPs):\n\n   | Setting | Production value | Get from |\n   |---------|-----------------|----------|\n   | `own_ip` | Server's public IP | `curl -s ifconfig.me` or `secmon --check` output |\n   | `known_ssh_ips` | Trusted admin IPs | Your SSH client IPs |\n   | `fail2ban_min_new_bans` | 50+ for busy server | Old default 5 is too low |\n   | `min_severity` | `HIGH` | Changed from `MEDIUM` to suppress routine username enum noise |\n   | `port_removed` | Browser ephemeral ports | Check secmon alerts history |\n   | `port_removed_processes` | `[chromium, agent-browser-l]` | Hermes browser agent processes |\n   | `secret_exclude_paths` | Add state-snapshots dir | Directory prefix matching |\n\n4. Fix the symlink: `ln -sf ~/.hermes/secmon/config.yaml /etc/secmon/config.yaml`\n5. Verify: `readlink -f /etc/secmon/config.yaml` must resolve to the real file. Run `secmon --tick --verbose` — it should NOT timeout.\n6. **Pitfall:** Without a valid config file, `secmon --tick` hangs for 30s then times out (the tick.py wrapper catches this, but the cron job fails silently for hours). Always verify tick works after config recovery.\n\n**Production config reference (this server):**\n\n```yaml\nwhitelist:\n  own_ip: 188.130.207.113\n  known_ssh_ips:\n    - 203.0.113.1\n  mac_whitelist:\n    - 24:97:45:76:37:13\n  port_removed:\n    - 80\n    - 443\n    - 2019\n    - 45123\n    - 39333\n  port_removed_processes:\n    - chromium\n    - agent-browser-l\n  secret_exclude_paths:\n    - /root/.hermes/state-snapshots\n    - /root/.hermes/config.yaml\n    - /root/.hermes/.env\nrealtime:\n  fail2ban_min_new_bans: 50\nhermes:\n  min_severity: HIGH\n```
 
 ### 4. Verify with User — Never Commit Until Confirmed ⚠️
 
@@ -275,22 +280,22 @@ payload = json.dumps({
 
 **Pitfall with raw GFM:** Blank lines between `|`-prefixed rows break the table. Each blank line terminates the current table. Rows after the blank become literal escaped pipes (`\|`). **Always strip blank lines between table rows** or use `telegramify-markdown` which handles this.
 
-**Installation:** `telegramify-markdown` must be installed in the **Hermes venv** (not just system Python), because cron jobs execute using the Hermes venv Python:
+**Installation:** `telegramify-markdown` must be installed in the **secmon plugin's venv** (not just system Python), because the cron delivery scripts use the secmon venv's python as their shebang target:
 ```bash
-/usr/local/lib/hermes-agent/venv/bin/pip install telegramify-markdown
+/root/.hermes/plugins/secmon/venv/bin/pip install telegramify-markdown
 ```
 
 **Bot token access:** Scripts source `/root/.hermes/.env` to read `TELEGRAM_BOT_TOKEN`.
 
 **Working script template** (save as `~/.hermes/scripts/secmon/audit.py`):
 ```python
-#!/usr/bin/env python3
+#!/root/.hermes/plugins/secmon/venv/bin/python3
 import json, os, subprocess, urllib.request
 from datetime import datetime, timezone
 from telegramify_markdown import richify
 
 # 1. Run audit
-proc = subprocess.run([CLI, "--audit"], capture_output=True, text=True, timeout=120)
+proc = subprocess.run([CLI, "--audit"], capture_output=True, text=True, timeout=300)  # 300s for RPi (debsums -c takes 60s+)
 raw = proc.stdout.strip()
 if not raw: exit(0)
 
@@ -469,7 +474,26 @@ print('last_audit_check:', ms.get('last_audit_check'))
 
 If `last_audit_check` is still stale after the manual tick, the crash is still happening — run with `--verbose` and check the tail output for the error.
 
-**Pitfall: `debsums -c` timeout is the most common slow-path.** The compliance check in `compliance.py:134` calls `run_cmd_safe(["debsums", "-c"], timeout=120)`. On a first run or after a system update, debsums checks every file's checksum against the dpkg database — this can take 2+ minutes on a Raspberry Pi. The tick.py wrapper's `subprocess.run(timeout=180)` is usually enough, but if the audit also runs other slow checks, the total can exceed 180s. Monitor with:
+**Pitfall: `debsums -c` timeout is the most common slow-path.** The compliance check in `compliance.py:134` calls `run_cmd_safe(["debsums", "-c"], timeout=120)`. On a first run or after a system update, debsums checks every file's checksum against the dpkg database — this can take 60+s on a Raspberry Pi (aarch64). The tick.py wrapper's `subprocess.run(timeout=180)` is usually enough, but if the audit also runs other slow checks, the total can exceed 180s.
+
+**Dealing with slow `debsums -c` on RPi:**
+
+`debsums -c` is a supply chain integrity check (NC-10) — it checksums all installed package files against dpkg records to detect tampering. It's a **LOW severity** recommendation, rarely fires, and takes 60s+ on RPi. The main finding is just a nudge: "debsums not installed (recommended)".
+
+| Approach | How | Best for |
+|----------|-----|----------|
+| Increase overall script timeout | Bump `timeout=120` → `timeout=300` in `audit.py` (cron delivery script) | When you want to keep the check but need headroom for RPi |
+| Reduce `debsums` internal timeout | Change `timeout=120` → `timeout=60` in `compliance.py:134` | When you want the check to be best-effort only |
+| Config-driven skip (`skip_debsums_check`) | Add `hardening.skip_debsums_check: True` to config + add `elif not cfg.get("hardening",{}).get("skip_debsums_check",False):` guard in `compliance.py` | Cleanest approach — keeps the "not installed" nudge but skips the slow `debsums -c` call. The `debsums -c` path is the only slow part; the `which debsums` check is instant. |
+| Skip entirely | Remove `debsums -c` call from `compliance.py` (the `else` branch) | When you want to eliminate the 60s penalty entirely — the "not installed" recommendation is already LOW severity and doesn't need the slow check. The check is `NC-10` in the compliance layer, not a critical security boundary. |
+
+**When to skip:** If the user asks "can we disable debsums", the answer is yes — it's a LOW severity recommendation, not a critical defense. The `debsums -c` call is the slow part; the "debsums not installed" nudge still fires if debsums isn't installed. The cleanest disable is the config-driven approach (`hardening.skip_debsums_check: True`) — it keeps the code path intact but skips the slow subprocess call. The `elif` guard in `compliance.py` checks `cfg.get("hardening", {}).get("skip_debsums_check", False)` — when True, the `debsums -c` call is skipped but the `which debsums` check still runs.
+
+**Dual-location for audit.py timeout:** The deployed copy at `~/.hermes/scripts/secmon/audit.py` wraps the entire `secmon --audit` command in `subprocess.run(timeout=120)`. On RPi with `debsums -c` taking 60s+, the total audit can easily exceed 120s. Bump to 300s in **both** locations:
+1. `~/.hermes/scripts/secmon/audit.py` — deployed copy (what cron runs)
+2. `~/.hermes/plugins/secmon/scripts/audit.py` — source (git-tracked, re-deployed by install.sh)
+
+Monitor with:
 
 ```bash
 time debsums -c 2>&1 | wc -l
@@ -828,10 +852,119 @@ if pathname == "(deleted)" and len(parts) >= 7:
 **Root cause:** `DEBIAN_SUID_WHITELIST` in `file_integrity.py` missing legitimate binaries
 **Fix:** Add binary path to whitelist (include both `/bin/` and `/usr/bin/` variants for usrmerge compatibility)
 
-### Fail2ban Burst Alerts
-**Symptom:** "SSH ban burst: X new bans" firing too frequently
-**Root cause:** `fail2ban_min_new_bans` threshold too low for server's normal traffic
-**Fix:** Increase threshold in config (typical busy server: 50+)
+### NC-9-unpriv Check Bug — Value 2 = Disabled, Not Enabled
+
+**Symptom:** 🔴 CRITICAL — "Unprivileged BPF enabled with programs loaded" on a system where `kernel.unprivileged_bpf_disabled=2`.
+
+**Root cause:** The check in `bpf/audit.py` line 140 was `if scan.programs_loaded and bpf_disabled != "1"`. The kernel accepts three values:
+- `0` = unprivileged BPF enabled (BAD)
+- `1` = disabled (can be re-enabled by root)
+- `2` = disabled permanently (most secure — cannot be re-enabled)
+
+Value 2 is **more secure** than value 1, but the `!= "1"` check flagged it as a finding. The check should only flag `== "0"`.
+
+**Fix:**
+```python
+# OLD (buggy — flags value 2 as finding):
+if scan.programs_loaded and bpf_disabled != "1":
+
+# NEW (correct — only flags == "0"):
+if scan.programs_loaded and bpf_disabled == "0":
+```
+
+This is a source code fix in `src/secmon/bpf/audit.py`. No config change needed. The fix accepts value 2 (permanently disabled) as properly disabled, which is the correct behavior.
+
+### NC-6-tmpfs Prefix Matching Enhancement
+
+**Symptom:** `/run/credentials/systemd-journald.service`, `/run/credentials/getty@tty1.service`, and similar systemd credentials paths flagged as unexpected tmpfs mounts. These paths are **dynamic** — they appear/disappear with service lifecycles and cannot be whitelisted by exact path.
+
+**Root cause:** The `NC-6-tmpfs` check in `process.py` used exact set membership (`mnt not in whitelisted_tmpfs`). Adding each variant as an exact path would require constant maintenance.
+
+**Fix (patch `src/secmon/audit/process.py`):**
+```python
+# OLD — exact match only:
+if mnt not in whitelisted_tmpfs:
+
+# NEW — prefix + exact match:
+in_whitelist = False
+for wl in whitelisted_tmpfs:
+    if mnt == wl or mnt.startswith(wl + "/"):
+        in_whitelist = True
+        break
+if not in_whitelist:
+```
+
+Now adding `/run/credentials` to `whitelist.tmpfs_mounts` automatically covers all subpaths like `/run/credentials/systemd-journald.service`.
+
+**Config:**
+```yaml
+whitelist:
+  tmpfs_mounts:
+    - /run/credentials    # covers all /run/credentials/* paths
+    - /var/tmp
+```
+
+### cert_exclude_paths — New Config Option
+
+**Symptom:** HIGH — "Expired cert: /etc/ssl/certs/Baltimore_CyberTrust_Root.pem". This is a Mozilla CA bundle cert that expired May 2025 — it's still shipped in the package for legacy TLS timestamp validation but is not a security threat.
+
+**Root cause:** The NC-4-expired check in `compliance.py` flagged ANY expired cert. No exclusion mechanism existed for known-safe expired certs in the system CA bundle.
+
+**Fix (patch `src/secmon/audit/compliance.py`):**
+1. Added `cert_exclude = set(cfg.get("hardening", {}).get("cert_exclude_paths", []))` before the loop
+2. Added `if path in cert_exclude: continue` before the expired check
+
+**Config:**
+```yaml
+hardening:
+  cert_exclude_paths:
+    - /etc/ssl/certs/Baltimore_CyberTrust_Root.pem
+```
+
+This is useful for known-expired CA bundle certs that cannot be removed without breaking legacy TLS verification.
+
+### mac_whitelist — Suppress Router Duplicate-MAC False Positives
+
+**Symptom:** 🟡 MEDIUM — `Duplicate MAC 24:97:45:76:37:13: ['192.168.10.254', 'fe80::1']`
+
+**Root cause:** The router's MAC appears with multiple IPs — one IPv4 gateway address and one or more IPv6 link-local addresses (`fe80::1`). This is normal for any router routing both IPv4 and IPv6.
+
+**Verification:**
+```bash
+ip neigh show | grep <mac-from-finding>
+ip route show default   # confirms it's the gateway
+```
+
+**Fix — whitelist the MAC:**
+```yaml
+whitelist:
+  mac_whitelist:
+    - "24:97:45:76:37:13"
+```
+
+**Config-only fix.** The `network.py` code was patched to check `mac not in mac_whitelist` before emitting the finding.
+
+**Pitfall:** Only whitelist MACs confirmed as your router. A real ARP spoof would have a different MAC — whitelisting the wrong one blinds secmon to actual ARP anomalies.
+
+### Batch Audit Remediation Workflow
+
+**Trigger:** User provides an audit log with 20+ findings and says "fix all of these."
+
+**Approach:** Parallel batching by layer — fix the system-level changes first (sshd config, sysctl, mount options), then the secmon config whitelisting, then source code bugs.
+
+**Steps:**
+1. **Prioritize by severity** — CRITICAL/HIGH first (fix or whitelist), MEDIUM second (config tuning), LOW last (informational)
+2. **Parallel batch independent fixes** — system changes (sshd, sysctl, mount, apt install) can all run in parallel
+3. **Config whitelisting second pass** — after system changes, update secmon config for expected findings (port_removed, tmpfs_mounts, DNS, secret_exclude_paths, cert_exclude_paths)
+4. **Source code fixes last** — secmon bugs (wrong comparison, missing config options) require patching the plugin repo
+5. **Reset baseline** — after all fixes, clear state (`rm /var/lib/secmon/state.json`) and re-record (`secmon --record`) so the next audit starts fresh
+6. **Verify** — run `secmon --audit` and compare finding count before/after
+
+**Pitfall — baseline noise after reset:** Resetting the state causes ALL baselines (listening ports, SUID cache, user accounts, persistence entries) to start fresh. The next audit will report EVERYTHING as "new" — this is expected noise. Let it run through once to establish a new baseline. The audit after that will be clean.
+
+**Pitfall — multiple audits on the same finding:** Some findings (Duplicate MAC, missing iptables chains, NOPASSWD cloud-init) require user decisions, not fixes. Flag them as "requires user review" in the summary so you don't keep re-investigating on subsequent fix rounds.
+
+**Pitfall — debsums audit timeout:** If the audit timed out before, increase `subprocess.run(timeout=120)` → `timeout=300` in the cron delivery script first, then run the audit. Without this, you'll timeout again before seeing the full finding list.
 
 ## Config Hardening — Immutable Protection
 
@@ -1121,3 +1254,4 @@ ps aux | grep 35753       # ❌ Not found
 - BPF watcher reference: `references/bpf-watcher.md` — comprehensive check ID table, classifier rules, stable key format, state machine transitions
 - Concurrent state-file race: `references/concurrent-state-file-race.md` — how concurrent secmon processes (--tick + --audit) can clobber last_tick via the read-modify-write pattern on state.json, and the fcntl.flock() fix (now historical — the self_protection check that read last_tick was removed, so the race no longer produces alerts)
 - Secret pattern placeholder test: `references/secret-pattern-placeholder.md` — 4-case regression check (`.env.example` placeholder → no flag; real keys/PEM → flag) for the `threat_intel.py` secret-scan fix
+- Batch audit remediation: `references/audit-remediation-batch.md` — full finding-fix session (29→5 findings), parallel batching by layer, config whitelisting, source code fixes, and key lessons

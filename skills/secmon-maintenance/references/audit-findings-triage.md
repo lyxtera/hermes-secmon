@@ -343,6 +343,27 @@ rm -rf /root/.hermes/state-snapshots/
 
 **Pitfall:** New snapshots will be created on the next Hermes config update. Option A is the set-and-forget solution; Option B requires periodic cleanup.
 
+## 11. NC-2-arp — Duplicate MAC (Router NAT + IPv6)
+
+**Symptom:** `Duplicate MAC 24:97:45:76:37:13: ['192.168.10.254', 'fe80::1']`
+
+**Root cause:** The router's MAC appears with multiple IPs — one IPv4 (gateway) and one or more IPv6 link-local (`fe80::1`). Normal for any router routing both IPv4 and IPv6.
+
+**Verification:**
+```bash
+ip neigh show | grep <MAC from finding>
+ip route show default  # confirms it's the gateway
+```
+
+**Fix — whitelist the MAC:**
+```yaml
+whitelist:
+  mac_whitelist:
+    - "24:97:45:76:37:13"
+```
+
+The code in `network.py` checks `mac not in mac_whitelist` before emitting the finding. This is a config-only fix — no source code change needed beyond the existing `mac_whitelist` key.
+
 ## General Triage Workflow
 
 When investigating any HIGH/MEDIUM finding:
