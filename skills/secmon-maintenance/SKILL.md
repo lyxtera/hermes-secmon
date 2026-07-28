@@ -489,7 +489,22 @@ If `last_audit_check` is still stale after the manual tick, the crash is still h
 
 **When to skip:** If the user asks "can we disable debsums", the answer is yes — it's a LOW severity recommendation, not a critical defense. The `debsums -c` call is the slow part; the "debsums not installed" nudge still fires if debsums isn't installed. The cleanest disable is the config-driven approach (`hardening.skip_debsums_check: True`) — it keeps the code path intact but skips the slow subprocess call. The `elif` guard in `compliance.py` checks `cfg.get("hardening", {}).get("skip_debsums_check", False)` — when True, the `debsums -c` call is skipped but the `which debsums` check still runs.
 
-**Dual-location for audit.py timeout:** The deployed copy at `~/.hermes/scripts/secmon/audit.py` wraps the entire `secmon --audit` command in `subprocess.run(timeout=120)`. On RPi with `debsums -c` taking 60s+, the total audit can easily exceed 120s. Bump to 300s in **both** locations:
+## Pitfall — Verify script execute permissions after install/sync
+
+After running `install.sh` or `sync-cron.sh`, the deployed scripts under `~/.hermes/scripts/secmon/` may **lack execute permission** (`chmod +x`). A script without `+x` causes the cron job to exit 126 with `Permission denied`:
+
+```bash
+# Quick verify:
+ls -la ~/.hermes/scripts/secmon/*.py | grep -v '^-rwx'
+# Should produce no output — every .py should be -rwxr-xr-x
+
+# Fix if needed:
+chmod +x ~/.hermes/scripts/secmon/*.py ~/.hermes/plugins/secmon/scripts/*.py
+```
+
+**Root cause:** `install.sh` copies with `cp` which preserves source perms. If the source files in the repo lack `+x`, the deployed copies also lack it. Add `chmod +x` to the deploy step.
+
+## Pitfall — Dual-location for audit.py timeout: The deployed copy at `~/.hermes/scripts/secmon/audit.py` wraps the entire `secmon --audit` command in `subprocess.run(timeout=120)`. On RPi with `debsums -c` taking 60s+, the total audit can easily exceed 120s. Bump to 300s in **both** locations:
 1. `~/.hermes/scripts/secmon/audit.py` — deployed copy (what cron runs)
 2. `~/.hermes/plugins/secmon/scripts/audit.py` — source (git-tracked, re-deployed by install.sh)
 
