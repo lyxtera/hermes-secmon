@@ -551,8 +551,22 @@ Per-command explicit timeouts (10s for iptables/dpkg, 30s for short journal quer
 1. The **deployed copy** at `~/.hermes/scripts/secmon/tick.py` — what cron runs
 2. The **source file** at `~/.hermes/plugins/secmon/scripts/tick.py` — what `install.sh` copies. Patch only deployed = fix lost on reinstall.
 
-**Pitfall:** `exit 1` from these scripts doesn't always mean failure — when tick.py/audit.py send findings via Telegram API directly (Pipeline C), they exit 0 but produce no stdout. The cron system records "silent (empty output)" even when a message was sent. Check the cron output dir for actual delivery records:
+**Pitfall:** `exit 1` from these scripts doesn't always mean failure — when tick.py/audit.py send findings via Telegram API directly (Pipeline C), they exit 0 but produce no stdout. The cron system records "silent (empty output)" even when a message was sent. **The cron output dir also shows "silent (empty output)"** — the finding was delivered to Telegram, not to stdout.
+
+**Debugging "silent (empty output)" when the user received findings:** Run the underlying CLI command directly, bypassing the audit.py wrapper:
+
 ```bash
+# Run the actual secmon CLI (not the cron wrapper) to see raw findings
+/root/.hermes/plugins/secmon/venv/bin/secmon --audit --config /etc/secmon/config.yaml
+
+# or via the system-installed symlink:
+secmon --audit
+```
+
+The cron wrapper (audit.py) sends via Telegram API when findings exist and exits 0 silently — so "silent" in cron history means "a message was sent" just as often as it means "no findings." The only way to tell is to run the CLI directly or ask the user. When the user replies to a finding, the underlying CLI is the authoritative source of truth.
+
+```bash
+# Check cron output dir (will show "silent" even if findings were sent):
 ls -lt ~/.hermes/cron/output/<job-id>/ | head -5
 cat ~/.hermes/cron/output/<job-id>/latest.md
 ```
