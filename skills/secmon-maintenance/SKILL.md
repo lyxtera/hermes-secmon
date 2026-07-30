@@ -14,6 +14,9 @@ triggers:
   - promoting known-good BPF programs to baseline
   - configuring BPF watcher thresholds and systemd whitelist
   - investigating Duplicate MAC / NC-2-arp router false positives
+  - investigating NC-11-gap journal gap false positives
+  - investigating proc_hollow_deleted library upgrade false positives
+  - fixing config file symlink split between /etc/ and ~/.hermes/
   - applying security upgrades
   - config whitelist tuning (secret_exclude_paths, ignored_ports)
   - suppressing INFO/LOW findings from audit report output
@@ -860,7 +863,9 @@ done
 
 **Fix (code patch in `src/secmon/audit/process.py`):**
 
-The check flagged ANY executable `(deleted)` mapping. Fix: verify the underlying file still exists on disk — if yes, it's a library upgrade artifact, skip it:
+The check flagged ANY executable `(deleted)` mapping. Two-stage fix:
+
+**Stage 1:** Verify the underlying file still exists on disk — if yes, it's a library upgrade artifact (old inode was replaced, but the file is still there), skip it:
 
 ```python
 if pathname == "(deleted)" and len(parts) >= 7:
@@ -868,13 +873,101 @@ if pathname == "(deleted)" and len(parts) >= 7:
     # File still exists on disk → library upgrade artifact
     if real_path.startswith("/") and os.path.exists(real_path):
         continue
+```
+
+**Stage 2 (fallback for fully replaced libraries):** When the old `.so` version is completely replaced (e.g., `libexpat.so.1.10.2` → `libexpat.so.1.12.2`), `os.path.exists()` returns False because the old file is gone. Check if the path is a shared library (`.so` extension) under standard library paths — these are almost certainly upgrade artifacts, not process hollowing:
+
+```python
+    # Shared library (.so) files under standard library paths
+    # that were deleted during a library upgrade are also
+    # benign — the old .so version was replaced by a new one.
+    if real_path.startswith("/") and re.search(r'\.so(?:\.\d+)*$', real_path):
+        continue
     # Truly deleted binary — flag it
     findings.append(AuditFinding(...))
 ```
 
+**Pitfall — `.so` fallback catches real attacks too:** A genuine attacker who deletes a `.so` and runs a replaced version would also be suppressed by the `.so` regex check. However, this is extremely unlikely — real process hollowing uses deleted binaries (executables), not shared libraries. The `.so` mapping is loaded by the dynamic linker at process start, and a deleted `.so` being mapped executable is normal library behavior. Accept the risk.
+
 **Pitfall:** The raw `/proc/pid/maps` line format splits `path (deleted)` into two tokens with `line.split()`. The actual path is `parts[5]`, and `(deleted)` is `parts[-1]`. Matching `pathname.endswith("(deleted)")` only captures the bare `(deleted)` token — the finding message shows no actual path. Always reconstruct `parts[5]` as the real path.
 
 **Dual-location fix:** Patch the source in the plugin repo (`~/.hermes/plugins/secmon/src/secmon/audit/process.py`). If the code is also installed at `/opt/secmon/src/secmon/audit/process.py` (e.g. via symlink or install.sh), update both locations.
+
+### NC-11-gap — Journal Gap False Positive
+
+**Symptom:** 🟠 HIGH — `Journal gap >1h before 2026-07-30 13:09:...` — a gap in journal entries >1 hour.
+
+**Root cause (two variants):**
+
+**Variant 1 — Power-off / reboot:** The system was powered off and rebooted. The gap between the last entry before shutdown and the first entry after boot is >1h. This is a normal power cycle, not a logging gap.
+
+**Variant 2 — Idle system (no log activity):** On a quiet server (e.g., Raspberry Pi with low traffic), there can be stretches of 1+ hours with no log entries. The server is running fine, but nothing generates journald output. This is especially common when Hermes is the primary workload — Hermes logs to its own files, not necessarily through journald.
+
+**Verification:**
+
+```bash
+# Check if the gap spans a boot boundary
+journalctl --list-boots --no-pager
+# If gap time is between two boot entries, it's a reboot (benign)
+
+# Check if the gap is within a single boot (idle system)
+journalctl --since "<gap-start>" --until "<gap-end>" -o short-iso | wc -l
+# If 0-1 entries, the system was idle
+```
+
+**Fix (code patch in `src/secmon/audit/logs.py`):**
+
+**Fix 1: Boot boundary detection.** The gap check now parses `--list-boots` output to get boot first/last entry timestamps. If a gap spans a boot boundary, it's suppressed as a power-off gap. The `--list-boots` format is:
+```
+  0 460beed2... Thu 2026-07-30 11:37:11 BST Thu 2026-07-30 13:35:35 BST
+```
+**Pitfall:** The day name (`Thu`) appears before each timestamp. Splitting by whitespace and taking `parts[2]` gives the day name, not the date. Correct parsing: `parts[3] + " " + parts[4]` for the first entry, `parts[7] + " " + parts[8]` for the last entry. The code must check `len(parts) >= 9` and `parts[0].isdigit()`.
+
+**Fix 2: Configurable gap threshold.** The hardcoded `timedelta(hours=1)` is now configurable via `logs.gap_threshold_hours` in `config.yaml`:
+
+```yaml
+logs:
+  gap_threshold_hours: 2   # suppress gaps up to 2 hours
+```
+
+The code reads it with a default of 1 hour:
+```python
+gap_threshold = cfg.get("logs", {}).get("gap_threshold_hours", 1)
+gap_delta = timedelta(hours=gap_threshold)
+```
+
+**Pitfall — choosing the right threshold:** A 2-hour threshold is appropriate for a quiet server (RPi, low traffic). For a busy production server, 1 hour is fine — the system should produce log entries more frequently. Don't set it too high (4+ hours) or you'll mask genuine logging gaps from a crashed journald.
+
+### Config File Consolidation — Broken Symlink
+
+**Symptom:** secmon is using the wrong config — findings don't match the expected whitelist. Audit shows unexpected findings (DNS, tmpfs, certs, MACs) that should be whitelisted.
+
+**Root cause:** The canonical config file is `~/.hermes/secmon/config.yaml` (auto-backed up by `hermes backup`). `/etc/secmon/config.yaml` should be a **symlink** to it:
+```
+/etc/secmon/config.yaml → ~/.hermes/secmon/config.yaml
+```
+If `/etc/secmon/config.yaml` is a **regular file** (not a symlink), secmon reads the old config at `/etc/` while the agent edits the new config at `~/.hermes/`. The two configs diverge, and whitelist changes in `~/.hermes/` don't take effect.
+
+**How to detect:**
+```bash
+ls -la /etc/secmon/config.yaml
+# If output shows a regular file (not a symlink), it's broken
+readlink -f /etc/secmon/config.yaml
+# Should resolve to /root/.hermes/secmon/config.yaml
+```
+
+**Fix:**
+```bash
+# Merge the best of both configs (the /etc/ one may have more whitelist entries)
+cp /etc/secmon/config.yaml ~/.hermes/secmon/config.yaml
+# Fix any stale values (own_ip, etc.)
+rm /etc/secmon/config.yaml
+ln -s ~/.hermes/secmon/config.yaml /etc/secmon/config.yaml
+```
+
+**Pitfall — `file_changed` finding after config replacement:** After replacing the config, the next audit will fire `🔴 CRITICAL — file_changed: /etc/secmon/config.yaml` because the file integrity baseline hashes the old file. This is expected — it clears on the next audit run. No action needed.
+
+**Pitfall — old config has stale values:** The `/etc/` copy may have old IPs (e.g., `own_ip: 213.7.225.107` vs current `188.130.207.113`). Always verify the merged config has the correct current values.
 
 ### SUID Binary Alerts
 **Symptom:** "Unexpected SUID: /usr/bin/pkexec" or similar
@@ -1284,3 +1377,4 @@ ps aux | grep 35753       # ❌ Not found
 - Concurrent state-file race: `references/concurrent-state-file-race.md` — how concurrent secmon processes (--tick + --audit) can clobber last_tick via the read-modify-write pattern on state.json, and the fcntl.flock() fix (now historical — the self_protection check that read last_tick was removed, so the race no longer produces alerts)
 - Secret pattern placeholder test: `references/secret-pattern-placeholder.md` — 4-case regression check (`.env.example` placeholder → no flag; real keys/PEM → flag) for the `threat_intel.py` secret-scan fix
 - Batch audit remediation: `references/audit-remediation-batch.md` — full finding-fix session (29→5 findings), parallel batching by layer, config whitelisting, source code fixes, and key lessons
+- 2026-07-30 fix session: `references/2026-07-30-fix-session.md` — proc_hollow_deleted `.so` library upgrade fallback, NC-11-gap boot boundary detection + configurable threshold, config file consolidation
