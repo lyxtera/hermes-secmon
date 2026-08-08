@@ -10,6 +10,7 @@ triggers:
   - audit report review and findings triage
   - batch remediation of all audit findings
   - investigating port_removed / secret_pattern / persist_modified findings
+  - new_listen_port alert for a self-started / own-service listening port
   - investigating NC-9-bpf-* watcher findings (persistent BPF programs)
   - promoting known-good BPF programs to baseline
   - configuring BPF watcher thresholds and systemd whitelist
@@ -786,6 +787,43 @@ This enables `NC-9-bpf-monitoring-gap` detection. Without auditd, the gap check 
 | Permanent systemd programs | Repeated HIGH until baseline absorbs | Promoted to baseline once, IGNORED forever |
 
 **New check IDs reference:** See `references/bpf-watcher.md` for a comprehensive listing of all BPF check IDs, their triggers, severities, and the corresponding classifier rules.
+
+### New Listen Port — Own Always-On Service False Positive
+
+**Symptom:** `🟠 HIGH — new_listen_port: New listening port: <port>` for a port owned by a legitimate always-on service of yours (e.g. a web UI / dev tool you launch manually with `--port N`).
+
+**Root cause:** The `new_listen_port` check in `src/secmon/audit/network.py` (line ~29) flags ANY port not already in the audit baseline (`known_ports`). It fires on a service's first appearance and again on every restart after a baseline reset. Historically it had **no whitelist path at all** — unlike `port_removed` (which has both a static `port_removed` list and process-name matching via `port_removed_processes`).
+
+**Verify it's your own service before whitelisting** (not an attacker):
+```bash
+ss -tlnp | grep :<port>                 # owning process
+tr '\0' ' ' < /proc/<pid>/cmdline       # launch command
+readlink /proc/<pid>/cwd                # origin dir (e.g. a node_modules)
+```
+
+**Fix (source + config, since the check had no whitelist):**
+1. **Patch `network.py`** to gate the firing on a new whitelist key:
+```python
+new_listen_ignore = set(cfg.get("whitelist", {}).get("new_listen_ports", []))
+for port, line in current_ports.items():
+    if str(port) in new_listen_ignore or int(port) in new_listen_ignore:
+        continue
+    if str(port) in known_ports and known_ports[str(port)] != line:
+        ...  # port_changed
+    elif str(port) not in known_ports:
+        ...  # new_listen_port
+```
+2. **Add the config key** under `whitelist:` in `~/.hermes/secmon/config.yaml`:
+```yaml
+whitelist:
+  new_listen_ports:
+    - 30141
+```
+3. **Sync docs** (the config-sync rule applies): add `new_listen_ports` to `config.yaml.example` and to the README's exclusion-tuning table.
+
+**Verification:** `secmon --audit --config ~/.hermes/secmon/config.yaml` must show no `new_listen_port` finding for the port, and no error. No baseline reset needed — the ignore is evaluated per-audit against the current `ss` snapshot.
+
+**Notes:** This is a static-port ignore — best for fixed always-on services. For *ephemeral* ports (browser/agent processes that change every run), the `new_listen_port` check currently has NO process-name variant; a process-based equivalent is the natural future enhancement.
 
 ### Port Removed — Transient Hermes Browser Ports
 **Symptom:** `Listening port removed: 45123`, `Listening port removed: 39333`
