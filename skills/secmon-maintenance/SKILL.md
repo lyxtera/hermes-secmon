@@ -588,6 +588,25 @@ find /tmp -name '*.pem' -o -name 'key.pem' 2>/dev/null   # sweep to confirm none
 ```
 Never write test secrets to a persistent path. Use `tempfile.mkdtemp()` and `rm -rf` it in the same session. A 12-byte "MIIEogIBAAKCAQEA" test vector still trips the PEM rule — it must be removed, not left for the nightly tick.
 
+## Test Suite Pitfalls (plugin venv pytest)
+
+Full suite: `cd ~/.hermes/plugins/secmon && source venv/bin/activate && python -m pytest tests/ --tb=short --no-cov`. Known machine-specific gotchas (all hit in one session, 2026-08-09):
+
+- **hypothesis missing → collection error.** `tests/test_properties.py` imports `hypothesis` at module level; without it the whole run aborts with `ERROR collecting` and NO tests execute. Fix: `pip install hypothesis` in the plugin venv.
+- **SECMON_* env vars leak from `/root/.hermes/.env`.** If you sourced .env (e.g. to get OPENROUTER_API_KEY for pi), `env | grep SECMON` shows SECMON_OWN_IP etc. `load_config`'s `_apply_env()` applies env values AFTER the yaml merge, so `tests/test_config.py::test_load_yaml_config` (writes `own_ip: 10.0.0.1` to a tmp yaml, expects it back) fails with the machine's real IP. Run the suite with a clean env:
+  ```bash
+  env -u SECMON_OWN_IP -u SECMON_CONFIG_PATH bash -c 'source venv/bin/activate && python -m pytest tests/ ...'
+  ```
+  This "looks like a pre-existing failure" — stash-verify before blaming your change (see below).
+- **Live-config bleed into the `cfg` fixture.** conftest's `cfg` calls `load_config(overrides=...)` with NO config path, so it falls through the candidate list and deep-merges the machine's real `~/.hermes/secmon/config.yaml`. Tests that assume defaults fail on this box:
+  - `test_outbound_whitelist_skips_telegram` — real config's `whitelist.outbound_destinations` (process-only entries, no `cidr`) REPLACES the default Telegram CIDR entries (deep-merge replaces lists). Fix in test: set `cfg["whitelist"]["outbound_destinations"] = [{"cidr": "149.154.160.0/20", "process": "hermes"}, ...]` explicitly.
+  - `test_compliance_debsums_critical` — real config sets `hardening.skip_debsums_check: True`, so the NC-10-critical branch never runs. Fix in test: `cfg.setdefault("hardening", {})["skip_debsums_check"] = False`.
+- **Time-drift test rot.** conftest `frozen_time` (fixed 2026-06-29) patches `secmon.utils/baseline/anomaly/alerts/metrics.utcnow` but NOT `secmon.state.utcnow`; and tests hardcode dates (`2026-06-29T00:00:00Z` in `test_trim_daily_stats`). As the real clock advances past `now - max_baseline_days` (30d), `trim_daily_stats` (state.py, real clock) deletes everything: `test_record_sample` gets `len(daily_stats) == 0`, `test_trim_daily_stats` gets `len(result) == 0`. Fixes: patch `secmon.state.utcnow` inside the test (`with patch("secmon.state.utcnow", return_value=frozen_time):`), or build timestamps relative to `datetime.now(timezone.utc)`.
+- **`secmon --check` is NOT a dry run.** It runs `run_check` (threat checks + the full audit pipeline, incl. `network.run`) and calls `save_state()` — it REWRITES `/var/lib/secmon/state.json` (mtime advances) and writes a daily snapshot into `/var/lib/secmon/snapshots/`. If a task says "do NOT touch state.json" but mandates `--check`, the command itself violates that. After such a run, audit the state: a load→save round-trip preserves content (`json.load(open('state.json')) == json.load(open('snapshots/state.<today>.json'))`, version/created_at/baseline keys intact). Note it also MIGRATES live state when the audit code is new (adds baseline keys like `reported_removed_ports: []` via setdefault — benign).
+- **Proving a failure is pre-existing:** `git stash push -- <your files only>` → re-run the failing tests → `git stash pop` (clean, since you don't touch those files in between). Do this BEFORE blaming your change — in the 2026-08-09 session it surfaced that one "pre-existing" failure was actually SECMON_* env pollution and four were genuine machine-coupled rot.
+
+Full session detail (delegation prompt, exact commands, verification results): `references/test-suite-pitfalls.md`.
+
 ## Plugin Skill Bundling
 
 Hermes plugins can **bundle skill packs** — skills that ship with the plugin and live in the plugin's directory tree, not `~/.hermes/skills/`. They're git-tracked by default since they're inside the plugin repo.
@@ -864,6 +883,28 @@ if transients:
 ```
 
 **Pitfall:** Use `port_removed_processes` for browser/agent ephemeral ports. Static `port_removed` works for truly fixed service ports, but ephemeral ports change every run — next session gets different numbers. Always use process-name matching for transient processes.
+
+### Port Removed — Repeats Every Tick (baseline never prunes)
+
+**Symptom:** The SAME `Listening port removed: <port>` fires on every 15-min tick, forever, for a port that was intentionally removed (e.g. an uninstalled web UI). Whitelisting it under `new_listen_ports` does NOT stop it.
+
+**Root cause:** `audit_baseline.known_ports` in `/var/lib/secmon/state.json` only ever grows — ports are added via `known_ports.update({...})` each audit but never pruned, and nothing records that a removal was already reported. So the `port_removed` loop in `src/secmon/audit/network.py` (`for port in set(map(int, known_ports)) - set(current_ports):`) re-fires every audit for any port absent from `current_ports`. The BPF watcher was rebuilt to alert only on state transitions (findings on transitions, VANISHED absorbed); the port check never got that treatment. (Session 2026-08-09: port 30141, an intentionally removed `@agegr/pi-web` UI, alerted every tick for a day.)
+
+**Stopgap (config, immediate — use while a code fix is pending):** add the port to `whitelist.port_removed` in `~/.hermes/secmon/config.yaml` (the single canonical file; `/etc/secmon/config.yaml` is a symlink):
+```yaml
+whitelist:
+  port_removed:
+    - 30141   # intentionally removed service — suppress repeat alerting
+```
+Verify immediately: `cd ~/.hermes/plugins/secmon && source venv/bin/activate && timeout 120 python -m secmon --tick --config ~/.hermes/secmon/config.yaml` → silent, EXIT=0.
+
+**Root-cause fix (code, transition semantics) — apply to `network.py`:** persist `ab.setdefault("reported_removed_ports", [])` in the audit baseline; emit `port_removed` only the FIRST time a non-whitelisted port disappears, then record it; remove it from the list once the port listens again (so a future removal re-alerts); prune gone-and-reported entries from `known_ports` so the baseline stops leaking; keep the existing `known_ports.update(current)` line (it re-adds live ports).
+
+**Asymmetry pitfall:** `whitelist.new_listen_ports` only suppresses NEW-port findings. It does NOT cover that port's later removal — a port listed there still fires `port_removed` when it disappears. Cover intentional removals in `port_removed`, not just `new_listen_ports`.
+
+Full delegation spec + regression-test recipe (first-run alert → second-run silent): `references/port-removed-repeat-fix.md`.
+
+**Status (2026-08-09): implemented locally (uncommitted) via Pi CLI delegation.** `src/secmon/audit/network.py` now persists `reported_removed_ports` in the audit baseline: skip-if-already-reported, record on first non-whitelisted alert, prune in place (`reported_removed_ports[:] = [p for p in ... if p not in current_ports]`) when a port listens again, and delete gone-and-reported `known_ports` entries before the existing `known_ports.update(...)` line. Regression test `test_network_port_removed_dedup` in `tests/test_push_95.py` (first run alerts exactly once + records, second run silent, whitelisted port never alerts/records, re-listen then re-disappear re-alerts). **Int/str nuance:** the live config's `port_removed` list is yaml INTs, so `port in port_removed_ignore` matches int ports; if a config ever loads them as strings that check silently misses — the dedup now makes a missed whitelist harmless (one alert, then silence).
 
 ### Proc Hollow Deleted — Library Upgrade Artifact
 
@@ -1350,6 +1391,27 @@ This keeps real secrets (private keys, AWS secrets, actual API keys) flagged whi
 
 **Test recipe:** `references/secret-pattern-placeholder.md` — self-contained 4-case check (placeholder → no flag; real GROQ key / AWS secret / PEM key → flag). Run it after any `threat_intel.py` secret-scan change.
 
+### Secret Pattern — Prose / Code / Type-Annotation Context False Positives (deeper bug)
+
+**Symptom:** `secret_pattern` HIGH on files with NO secrets — open-source extension sources that merely *mention* `apiKey:` in code, types, or UI strings. Real case (2026-08-09): `/root/fork/pi-coding-agent-forge/pi-extension-brave-search/index.ts` flagged for `"Brave Search setup cancelled: no API key..."` (a user-facing UI message!), and cursor-composer flagged for `onTextDelta?: (delta: string, ...)` (a function type). The `.env.example` skip (above) does NOT cover these — the files aren't `.example`, they're legit source.
+
+**Root cause (two compounding bugs in `src/secmon/audit/threat_intel.py`):**
+1. `re.compile(r"api[_-]?key\s*[:=]", re.I)` matches `apiKey:` in ANY context — object properties `{ apiKey: *** }`, TS type annotations `apiKey?: string;`, and prose/UI strings.
+2. The "is it a real value?" check is broken: on match it builds `line = sample[max(0, m.start()-200):m.end()+200]` (a ±200-char window), then `key_line.split("=", 1)[-1]` dumps everything after the FIRST `=` in the WHOLE window as the "value". Any code/prose containing `=` anywhere nearby satisfies `len >= 8` and misses the tiny placeholder list — so arbitrary text gets reported as "secret material". The value is never required to be on the SAME LINE as the key.
+
+**Verification pattern (do this before touching code):** write a standalone repro that runs the 3 `SECRET_PATTERNS` regexes + the exact value-extraction logic over the flagged file, printing `pattern + line no + val` per hit. Example hit shapes that prove the bug: `val='if (workspaceKey) return { apiKey: ...'` and `val='ctx.ui.notify("Brave Search setup cancelled: no API key...'`.
+
+**Fix direction (implemented 2026-08-09 via Pi delegation, `threat_intel.py`):** validate the value ON THE SAME LINE as the key token; reject env-var indirection (`process.env[...]`, `getEnv(`, `env(`, `readEnvValue(`, `.env` references — variable refs, not secrets), type annotations/declarations with no literal (`apiKey?: string;`, `apiKey: string`, `apiKey:` EOL/`;`), prose/UI strings (value contains spaces, reads like a sentence), and code expressions (contain `(` `)` `[` `]` `.` `=>` `{` `}` or template interpolation). Expand the placeholder list with "string", "none", "null", "undefined", "true", "false", "secret", "key". Flag ONLY same-line quoted literals or bare tokens (no spaces, len ≥ 8 after stripping quotes). PEM private-key and `AWS_SECRET_ACCESS_KEY` regexes stay unchanged (already specific, no same-line validation).
+
+**Implementation notes (final design, same session — 3 details the spec missed):**
+- **JSON quoted keys never matched the old regex.** `apiKey\s*[:=]` can't match `"apiKey":` (quote sits between key and colon). Pattern widened to `["']?api[_-]?key["']?\s*[:=]`. `apiKey?: string;` still never matches (the `?` blocks `[:=]`) — TS optional annotations are skipped by the regex itself, don't lean on the value checker for them.
+- **Quoted literals tolerate trailing structural chars** (`}`, `,`, `;`, `// comment` after the closing quote) — that's what keeps `{"apiKey": "sk-..."}` flaggable in JSON. The code-expression/env/whitespace rejection applies ONLY to bare (unquoted) tokens.
+- **Per-pattern dispatch by index:** PEM flags on marker alone (same-line validation would always skip it — a `-----BEGIN` line has an empty "rest"); AWS keeps a placeholder-gate (`AWS_SECRET_ACCESS_KEY=your-key-here` still suppressed); apiKey gets the strict same-line validator. Scan roots hoisted to `SECRET_SCAN_ROOTS` module constant so tests can monkeypatch them.
+
+**Test pattern for `_scan_secrets`:** one file per private scan root (a shared root accumulates findings and breaks `len(hits) == 1` asserts). Fork-repo integration test uses absolute paths + `skipif(os.path.isdir)` guard. Full detail + surprises: `references/secret-pattern-context-fps.md`.
+
+**Regression cases to cover:** `apiKey?: string;` → no flag; prose "Save the API key which you created..." → no flag; `apiKey = "sk-0123456789abcdef..."` → flag; `API_KEY=AKIAIOSFODNN7EXAMPLE` → flag; `.env.example` placeholder → no flag; PEM block → flag.
+
 ### Hidden tmp — BPF / Executable Investigation
 **Symptom:** `hidden_tmp` fires for a hidden entry in `/dev/shm` or `/tmp` (e.g., `.bt`)
 **Investigation pattern:**
@@ -1414,5 +1476,8 @@ ps aux | grep 35753       # ❌ Not found
 - BPF watcher reference: `references/bpf-watcher.md` — comprehensive check ID table, classifier rules, stable key format, state machine transitions
 - Concurrent state-file race: `references/concurrent-state-file-race.md` — how concurrent secmon processes (--tick + --audit) can clobber last_tick via the read-modify-write pattern on state.json, and the fcntl.flock() fix (now historical — the self_protection check that read last_tick was removed, so the race no longer produces alerts)
 - Secret pattern placeholder test: `references/secret-pattern-placeholder.md` — 4-case regression check (`.env.example` placeholder → no flag; real keys/PEM → flag) for the `threat_intel.py` secret-scan fix
+- Secret-pattern context false positives: `references/secret-pattern-context-fps.md` — prose/code/type-annotation FPs (files that mention `apiKey:` without holding secrets), the ±200-char-window value-extraction bug, same-line validation fix spec, delegation prompt essentials, reproductions that prove the bug before coding
 - Batch audit remediation: `references/audit-remediation-batch.md` — full finding-fix session (29→5 findings), parallel batching by layer, config whitelisting, source code fixes, and key lessons
+- Port-removed repeat-forever fix: `references/port-removed-repeat-fix.md` — known_ports baseline never-prunes root cause, `new_listen_ports` asymmetry, transition-semantics code fix spec, and first-run/second-run regression test recipe
+- Test-suite pitfalls: `references/test-suite-pitfalls.md` — SECMON_* env pollution from `.env`, live-config bleed into the cfg fixture, time-drift test rot, `secmon --check` rewriting state.json, stash two-file trick for proving pre-existing failures
 - 2026-07-30 fix session: `references/2026-07-30-fix-session.md` — proc_hollow_deleted `.so` library upgrade fallback, NC-11-gap boot boundary detection + configurable threshold, config file consolidation
