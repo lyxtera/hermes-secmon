@@ -345,6 +345,7 @@ Secmon scanners are intentionally aggressive. Use these config options in `white
 | `whitelist.secret_exclude_paths` | Skip operational config files in secret pattern scan. Supports directory prefixes (e.g. `/root/.hermes/state-snapshots` covers all files within) | `["/root/.hermes/config.yaml"]` |
 | `whitelist.port_removed` | Suppress port-removed alerts for specific ports | `[80, 443]` |
 | `whitelist.port_removed_processes` | Suppress port-removed alerts when process is a known transient (e.g. ephemeral browser/agent ports) | `["firefox", "hermes"]` |
+| `whitelist.new_listen_ports` | Suppress "new listening port" alerts for specific always-on ports (e.g. own services) | `[30141]` |
 | `whitelist.proc_hollow_exclude_pids` | Exclude specific PIDs from anonymous mapping checks | `[449]` |
 | `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node", "unattended-upgr"]` |
 | *(auto)* | `proc_hollow_deleted` auto-suppresses `(deleted)` mappings when the file still exists on disk — library upgrade artifacts are silently skipped | Built-in, no config needed |

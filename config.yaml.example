@@ -71,6 +71,10 @@ whitelist:
     - "chromium"
     - "agent-browser-l"
 
+  # Ports that should never trigger a "new listening port" alert
+  new_listen_ports:
+    - 30141
+
 anomaly:
   baseline_min_samples: 4
   max_baseline_days: 30
@@ -113,6 +117,22 @@ hardening:
   skip_password_auth_check: False
   skip_fw_policy_check: True      # Don't flag INPUT not DROP (remote server lockout risk)
   skip_kernel_modules_check: True # Don't flag kernel modules enabled (can't set at runtime)
+
+# Auto-remediation: proactively fix safe findings instead of just reporting them.
+# Only check_ids listed in whitelist are eligible. Everything else stays alert-only.
+auto_remediate:
+  enabled: true                  # Set to false to return to report-only mode
+  whitelist:
+    - secret_pattern             # Remove files in /tmp that matched a secret pattern
+    - secret_key_tmp             # Remove private keys/credentials found in /tmp
+    - world_writable             # chmod o-w on root-owned world-writable files/dirs
+    - secret_world_readable      # chmod 600 on exposed sensitive files
+    - secret_authkeys_perm       # Fix SSH authorized_keys permissions
+    - hidden_tmp                 # Remove hidden temp files (non-whitelisted)
+    - tmp_executable             # Remove executable bit from temp files
+    - unattended                 # Enable unattended-upgrades (auto security patching)
+    - nopasswd                   # Remove NOPASSWD from /etc/sudoers.d/ entries
+    - systemd_failed             # Restart failed non-critical systemd units
 
 # Override expected sysctl values (accept multiple valid values)
 sysctl:

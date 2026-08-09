@@ -209,6 +209,13 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                         # artifact (old inode was replaced), not process hollowing
                         if real_path.startswith("/") and os.path.exists(real_path):
                             continue
+                        # Shared library (.so) files under standard library paths
+                        # that were deleted during a library upgrade are also
+                        # benign — the old .so version was replaced by a new one
+                        # (e.g. libexpat.so.1.10.2 → libexpat.so.1.12.2).
+                        # Check for .so. pattern or .so at end of filename.
+                        if real_path.startswith("/") and re.search(r'\.so(?:\.\d+)*$', real_path):
+                            continue
                         findings.append(
                             AuditFinding(
                                 "CRITICAL", 3, "proc_hollow_deleted",

@@ -78,6 +78,13 @@ def test_outbound_whitelist_skips_telegram(cfg, state, mock_commands):
         ["ss", "-tnp", "state", "established"],
         "0.0.0.0:50000        149.154.166.110:443   users:((\"hermes\",",
     )
+    # Explicitly set the Telegram whitelist entry: the cfg fixture deep-merges the
+    # machine's real ~/.hermes/secmon/config.yaml, whose outbound_destinations
+    # list replaces the defaults (no cidr entries).
+    cfg.setdefault("whitelist", {})["outbound_destinations"] = [
+        {"cidr": "149.154.160.0/20", "process": "hermes", "reason": "Telegram MTProto API"},
+        {"cidr": "91.108.56.0/22", "process": "hermes", "reason": "Telegram MTProto API"},
+    ]
     # Verify default whitelist covers this
     assert any(
         entry.get("cidr") == "149.154.160.0/20" and entry.get("process") == "hermes"

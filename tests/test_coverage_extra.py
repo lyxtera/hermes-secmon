@@ -122,9 +122,10 @@ def test_baseline_staleness(cfg, state, frozen_time):
 
 
 def test_trim_daily_stats():
+    from datetime import datetime, timezone
     from secmon.config import METRIC_KEYS
     old = {"timestamp": "2020-01-01T00:00:00Z", **{k: 1 for k in METRIC_KEYS}}
-    new = {"timestamp": "2026-06-29T00:00:00Z", **{k: 1 for k in METRIC_KEYS}}
+    new = {"timestamp": datetime.now(timezone.utc).isoformat(), **{k: 1 for k in METRIC_KEYS}}
     result = trim_daily_stats([old, new], 30)
     assert len(result) == 1
 

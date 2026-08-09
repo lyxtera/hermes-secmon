@@ -1,5 +1,7 @@
 """Baseline tests."""
 
+from unittest.mock import patch
+
 from secmon.baseline import compute_baselines, record_sample, suggest_calibration
 from secmon.config import METRIC_KEYS
 
@@ -28,7 +30,11 @@ def test_insufficient_samples():
 def test_record_sample(cfg, state, frozen_time):
     state["daily_stats"] = []
     metrics = {k: 50 for k in METRIC_KEYS}
-    assert record_sample(state, cfg, metrics)
+    # record_sample trims via state.trim_daily_stats, which uses secmon.state.utcnow
+    # (not patched by the frozen_time fixture) - freeze it too so the sample is
+    # never trimmed as "stale" regardless of the real clock.
+    with patch("secmon.state.utcnow", return_value=frozen_time):
+        assert record_sample(state, cfg, metrics)
     assert len(state["daily_stats"]) == 1
     assert state["monitor_state"]["last_record"] is not None
 

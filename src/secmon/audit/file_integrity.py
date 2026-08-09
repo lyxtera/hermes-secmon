@@ -99,7 +99,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             fp = fp.strip()
             if fp:
                 findings.append(
-                    AuditFinding("CRITICAL", 1, "world_writable", f"World-writable: {fp}")
+                    AuditFinding("CRITICAL", 1, "world_writable", f"World-writable: {fp}", {"path": fp})
                 )
 
     # Hidden files in tmp areas
@@ -116,7 +116,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                 if entry in hidden_whitelist:
                     continue
                 findings.append(
-                    AuditFinding("MEDIUM", 1, "hidden_tmp", f"Hidden entry in {tmp_dir}: {entry}")
+                    AuditFinding("MEDIUM", 1, "hidden_tmp", f"Hidden entry in {tmp_dir}: {entry}", {"path": f"{tmp_dir}/{entry}"})
                 )
 
     # ld.so.preload

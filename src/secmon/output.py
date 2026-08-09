@@ -560,8 +560,12 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
     high = result.get("high_count", 0)
     med = sum(1 for f in result.get("findings", []) if f["severity"] == "MEDIUM")
     low = sum(1 for f in result.get("findings", []) if f["severity"] == "LOW")
+    auto = result.get("auto_resolved_count", 0)
 
     all_findings = result.get("findings", [])
+    # Active findings exclude auto-resolved ones
+    active_findings = [f for f in all_findings if not f.get("auto_resolved")]
+    total_active = len(active_findings)
 
     lines.append("🔍 **Secmon Audit**")
     lines.append("")
@@ -575,12 +579,25 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
         parts.append(f"🟡 **{med} MED**")
     if low:
         parts.append(f"🔵 **{low} LOW**")
-    parts.append(f"Σ **{total}** risk **{score}**")
+    if auto:
+        parts.append(f"🟢 **{auto} AUTO-FIXED**")
+    parts.append(f"Σ **{total_active}** risk **{score}**")
     lines.append(" · ".join(parts))
     lines.append("")
 
-    if not all_findings:
-        lines.append("✅ **System clean** — no findings.")
+    # Auto-resolved findings section
+    if auto:
+        resolved = [f for f in all_findings if f.get("auto_resolved")]
+        lines.append("**🟢 Auto-resolved this run**")
+        lines.append("")
+        for f in resolved:
+            check_id = f.get("check_id", "")
+            msg = f.get("message", "")
+            lines.append(f"• {msg}")
+        lines.append("")
+
+    if not active_findings:
+        lines.append("✅ **System clean** — no active findings.")
         lines.append("")
         lines.append("`secmon --audit`")
         return "\n".join(lines)
@@ -589,7 +606,7 @@ def format_audit_markdown(result: dict[str, Any]) -> str:
     lines.append("| :---: | :--- | :--- | :--- |")
 
     for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
-        group = [f for f in all_findings if f["severity"] == severity]
+        group = [f for f in active_findings if f["severity"] == severity]
         if not group:
             continue
         

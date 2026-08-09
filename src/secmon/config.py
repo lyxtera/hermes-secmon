@@ -132,6 +132,21 @@ def default_config() -> dict[str, Any]:
             "skip_fw_policy_check": False,
             "skip_kernel_modules_check": False,
         },
+        "auto_remediate": {
+            "enabled": False,
+            "whitelist": [
+                "secret_pattern",
+                "secret_key_tmp",
+                "world_writable",
+                "secret_world_readable",
+                "secret_authkeys_perm",
+                "hidden_tmp",
+                "tmp_executable",
+                "unattended",
+                "nopasswd",
+                "systemd_failed",
+            ],
+        },
         "sysctl": {
             "expected_values": {},
         },

@@ -47,6 +47,9 @@ def test_auth_new_user_and_key_change(cfg, state, mock_commands):
 
 
 def test_compliance_debsums_critical(cfg, state, mock_commands):
+    # The machine's real ~/.hermes/secmon/config.yaml sets skip_debsums_check: True,
+    # which bleeds into the cfg fixture - force the check on for this test.
+    cfg.setdefault("hardening", {})["skip_debsums_check"] = False
     for key in (
         "kernel.kptr_restrict", "kernel.yama.ptrace_scope", "fs.protected_hardlinks",
         "fs.protected_symlinks", "net.ipv4.conf.all.rp_filter", "net.ipv4.conf.all.log_martians",

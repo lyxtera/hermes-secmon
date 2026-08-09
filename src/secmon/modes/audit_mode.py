@@ -5,11 +5,21 @@ from __future__ import annotations
 from secmon.alerts import dispatch, findings_to_alerts
 from secmon.audit import run_audit
 from secmon.output import format_audit_markdown
+from secmon.remediate import remediate
 from secmon.state import save_state
 
 
 def run_audit_mode(state: dict, cfg: dict) -> int:
     result = run_audit(state, cfg)
+    findings = result.get("findings", [])
+
+    # Auto-remediate safe findings before formatting output
+    remediated = remediate(findings, cfg)
+    result["findings"] = remediated
+    result["auto_resolved_count"] = sum(
+        1 for f in remediated if f.get("auto_resolved")
+    )
+
     state["last_audit_score"] = result.get("total_score", 0)
     state["last_audit_findings"] = result.get("findings", [])
 

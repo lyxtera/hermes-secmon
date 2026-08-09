@@ -104,7 +104,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             for i, line in enumerate(open(path, encoding="utf-8", errors="replace")):
                 if "NOPASSWD" in line and not line.strip().startswith("#"):
                     findings.append(
-                        AuditFinding("MEDIUM", 4, "nopasswd", f"NOPASSWD in {path}:{i+1}")
+                        AuditFinding("MEDIUM", 4, "nopasswd", f"NOPASSWD in {path}:{i+1}", {"path": path})
                     )
         except OSError:
             continue

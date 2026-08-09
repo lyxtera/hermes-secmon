@@ -67,6 +67,27 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             AuditFinding("CRITICAL", 5, "NC-11-verify", "Journal verification failed")
         )
     # Time gaps in journal
+    # Get boot boundaries to distinguish power-off gaps from logging gaps
+    # --list-boots format: IDX BOOT_ID DAY DATE TIME TZ DAY DATE TIME TZ
+    # e.g. "  0 abc... Thu 2026-07-30 11:37:11 BST Thu 2026-07-30 13:35:35 BST"
+    boot_boundaries = set()
+    boot_output = run_cmd_safe(["journalctl", "--list-boots", "--no-pager"], timeout=15)
+    for line in boot_output.splitlines():
+        parts = line.strip().split()
+        # Need at least: idx, boot_id, 2x(day+date+time+tz) = 9 parts minimum
+        if len(parts) >= 9 and parts[0].isdigit():
+            for offset in [2, 6]:  # offset to FIRST_ENTRY day, then LAST_ENTRY day
+                try:
+                    ts_str = f"{parts[offset+1]} {parts[offset+2]}"  # "2026-07-30 11:37:11"
+                    boot_boundaries.add(
+                        datetime.fromisoformat(ts_str).replace(tzinfo=None)
+                    )
+                except (ValueError, IndexError):
+                    pass
+
+    gap_threshold = cfg.get("logs", {}).get("gap_threshold_hours", 1)
+    gap_delta = timedelta(hours=gap_threshold)
+
     since = run_cmd_safe(["journalctl", "--since", "48 hours ago", "-o", "short-iso"], timeout=30)
     prev_ts = None
     for line in since.splitlines():
@@ -74,10 +95,18 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             continue
         try:
             ts = datetime.fromisoformat(line[:19])
-            if prev_ts and (ts - prev_ts) > timedelta(hours=1):
-                findings.append(
-                    AuditFinding("HIGH", 5, "NC-11-gap", f"Journal gap >1h before {ts}")
-                )
+            if prev_ts and (ts - prev_ts) > gap_delta:
+                # Check if the gap spans a boot boundary (power-off, not a logging gap)
+                is_reboot_gap = False
+                for boundary in boot_boundaries:
+                    if prev_ts < boundary < ts:
+                        is_reboot_gap = True
+                        break
+                if not is_reboot_gap:
+                    findings.append(
+                        AuditFinding("HIGH", 5, "NC-11-gap",
+                                     f"Journal gap >{gap_threshold}h before {ts}")
+                    )
             prev_ts = ts
         except ValueError:
             continue
