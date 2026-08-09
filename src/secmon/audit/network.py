@@ -13,6 +13,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     ab = state.setdefault("audit_baseline", {})
     known_ports: dict = ab.setdefault("known_ports", {})
+    reported_removed_ports = ab.setdefault("reported_removed_ports", [])
 
     # Listening ports
     listen = run_cmd_safe(["ss", "-tlnp"])
@@ -21,7 +22,10 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         m = re.search(r":(\d+)\s", line)
         if m:
             current_ports[int(m.group(1))] = line.strip()
+    new_listen_ignore = set(cfg.get("whitelist", {}).get("new_listen_ports", []))
     for port, line in current_ports.items():
+        if str(port) in new_listen_ignore or int(port) in new_listen_ignore:
+            continue
         if str(port) in known_ports and known_ports[str(port)] != line:
             findings.append(
                 AuditFinding("MEDIUM", 2, "port_changed", f"Listening port {port} changed")
@@ -43,9 +47,16 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
             m = _re.search(r'"([^"]+)"', line)
             if m and m.group(1) in transients:
                 continue
+        if port in reported_removed_ports:
+            continue
         findings.append(
             AuditFinding("HIGH", 2, "port_removed", f"Listening port removed: {port}")
         )
+        reported_removed_ports.append(port)
+    reported_removed_ports[:] = [p for p in reported_removed_ports if p not in current_ports]
+    for gone_port in list(known_ports.keys()):
+        if int(gone_port) not in current_ports and int(gone_port) in reported_removed_ports:
+            del known_ports[gone_port]
     known_ports.update({str(k): v for k, v in current_ports.items()})
 
     # Firewall status

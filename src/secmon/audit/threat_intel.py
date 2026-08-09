@@ -38,10 +38,77 @@ PERSISTENCE_PATHS = [
 SECRET_PATTERNS = [
     re.compile(r"-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----"),
     re.compile(r"AWS_SECRET_ACCESS_KEY\s*="),
-    re.compile(r"api[_-]?key\s*[:=]", re.I),
+    # Optional quotes around the key name cover JSON configs ("apiKey": ...).
+    re.compile(r"[\"']?api[_-]?key[\"']?\s*[:=]", re.I),
 ]
 
 SECRET_FILENAMES = {"id_rsa", "id_ecdsa", "id_ed25519", ".env", "credentials", "secrets.json"}
+
+# Directories walked by the secret content scanner (WEB_ROOTS get appended too).
+SECRET_SCAN_ROOTS = ["/tmp", "/var/tmp", "/dev/shm", "/root"]
+
+# Values that are never real secrets: empty, redaction markers, template
+# placeholders, and the words that mark type annotations / prose.
+SECRET_PLACEHOLDERS = frozenset({
+    "", "***", "CHANGEME", "<your-key-here>", "your-key-here", "placeholder",
+    "REPLACE_ME", "TODO", "xxxx", "xxxxxx", "string", "string;", "none",
+    "null", "undefined", "true", "false", "secret", "key",
+})
+
+# Substrings that mean the value is pulled from an environment variable or
+# config lookup (indirection) instead of being a literal secret.
+_ENV_REF_MARKERS = ("process.env", ".env", "getenv(", "readenvvalue", "env(")
+
+
+def _rest_of_line(sample: str, m: re.Match) -> str:
+    """Everything on the matched line that follows the key token (stripped)."""
+    line_start = sample.rfind("\n", 0, m.start()) + 1
+    line_end = sample.find("\n", m.end())
+    if line_end == -1:
+        line_end = len(sample)
+    line = sample[line_start:line_end]
+    return line[m.end() - line_start:].strip()
+
+
+def _real_secret_value(sample: str, m: re.Match) -> str | None:
+    """Return a validated literal secret on the matched line, or None.
+
+    Only same-line quoted literals / bare tokens qualify. Env-var references,
+    code expressions, type annotations and prose never qualify.
+    """
+    rest = _rest_of_line(sample, m)
+    if not rest:
+        return None
+    if rest[0] in "\"'":
+        # Quoted literal: the string content is the value. Trailing structural
+        # characters (`,`, `}`, `)`, `;`) after the closing quote are fine.
+        quote = rest[0]
+        end = rest.find(quote, 1)
+        if end == -1:
+            end = len(rest)
+        val = rest[1:end]
+        if re.search(r"\s", val):
+            return None
+        if val in SECRET_PLACEHOLDERS or len(val) < 8:
+            return None
+        return val
+    # Property/type declaration with no value: `apiKey:;`, `apiKey: string;`
+    if rest.startswith((";", ",", "}", ")", "]")):
+        return None
+    # Prose / UI strings and multi-token text read like sentences, not secrets.
+    if re.search(r"\s", rest):
+        return None
+    # Indirection: value is read from an env var / config lookup, not a literal.
+    lowered = rest.lower()
+    if any(marker in lowered for marker in _ENV_REF_MARKERS):
+        return None
+    # Code expressions / identifiers with member access / template literals.
+    if "=>" in rest or any(c in rest for c in "()[]{.}"):
+        return None
+    val = rest.rstrip(";,").strip().strip("\"'")
+    if val in SECRET_PLACEHOLDERS or len(val) < 8:
+        return None
+    return val
 
 
 def _file_hash(path: str) -> str | None:
@@ -130,7 +197,7 @@ def _is_excluded(fp: str, exclude_paths: set[str]) -> bool:
 def _scan_secrets(cfg: dict) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     exclude_paths = set(cfg.get("whitelist", {}).get("secret_exclude_paths", []))
-    scan_roots = ["/tmp", "/var/tmp", "/dev/shm", "/root"]
+    scan_roots = [r for r in SECRET_SCAN_ROOTS if os.path.isdir(r)]
     for web in WEB_ROOTS:
         if os.path.isdir(web):
             scan_roots.append(web)
@@ -165,6 +232,7 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                                     AuditFinding(
                                         "CRITICAL", 6, "secret_key_tmp",
                                         f"Private key in temp directory: {fp}",
+                                        {"path": fp},
                                     )
                                 )
                         except OSError:
@@ -180,28 +248,49 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                         if fname.endswith(".example") or ".example." in fname:
                             continue
                         sample = open(fp, encoding="utf-8", errors="replace").read(8000)
-                        for pat in SECRET_PATTERNS:
+                        for idx, pat in enumerate(SECRET_PATTERNS):
                             m = pat.search(sample)
                             if not m:
                                 continue
-                            # Require an actual secret value, not a bare label or
-                            # placeholder. Extract the matched line and check that
-                            # something real follows the assignment.
-                            line = sample[max(0, m.start() - 200):m.end() + 200]
-                            # strip to the matched key line
-                            key_line = line.splitlines()[-1] if "=" in line else line
-                            val = key_line.split("=", 1)[-1].strip().strip("\"'")
-                            placeholder = val in ("", "***", "CHANGEME", "<your-key-here>",
-                                                  "your-key-here", "placeholder", "REPLACE_ME",
-                                                  "TODO", "xxxx", "xxxxxx")
-                            if not placeholder and len(val) >= 8:
+                            if idx == 0:
+                                # PEM private-key header: definitive signature,
+                                # flag on the marker alone.
                                 findings.append(
                                     AuditFinding(
                                         "HIGH", 6, "secret_pattern",
                                         f"Secret material pattern in {fp}",
+                                        {"path": fp},
                                     )
                                 )
                                 break
+                            if idx == 1:
+                                # AWS_SECRET_ACCESS_KEY is specific enough that
+                                # only explicit placeholders are tolerated.
+                                val = _rest_of_line(sample, m).strip("\"'").rstrip(";,")
+                                if val in SECRET_PLACEHOLDERS or len(val) < 8:
+                                    continue
+                                findings.append(
+                                    AuditFinding(
+                                        "HIGH", 6, "secret_pattern",
+                                        f"Secret material pattern in {fp}",
+                                        {"path": fp},
+                                    )
+                                )
+                                break
+                            # api[_-]?key / API_KEY=: require a real literal
+                            # secret value on the same line as the key. Code,
+                            # type annotations, env-var references and prose
+                            # must never be flagged.
+                            if _real_secret_value(sample, m) is None:
+                                continue
+                            findings.append(
+                                AuditFinding(
+                                    "HIGH", 6, "secret_pattern",
+                                    f"Secret material pattern in {fp}",
+                                    {"path": fp},
+                                )
+                            )
+                            break
                     except OSError:
                         continue
         except OSError:
@@ -218,6 +307,7 @@ def _scan_secrets(cfg: dict) -> list[AuditFinding]:
                             AuditFinding(
                                 "HIGH", 6, "secret_authkeys_perm",
                                 f"World/group-readable authorized_keys: {user.pw_name}",
+                                {"path": f"/home/{user.pw_name}/.ssh/authorized_keys"},
                             )
                         )
                 except OSError:
@@ -293,7 +383,7 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
                     mtime = datetime.fromtimestamp(os.path.getmtime(fp))
                     if mtime > cutoff:
                         findings.append(
-                            AuditFinding("HIGH", 6, "tmp_executable", f"Recent executable: {fp}")
+                            AuditFinding("HIGH", 6, "tmp_executable", f"Recent executable: {fp}", {"path": fp})
                         )
             except OSError:
                 continue

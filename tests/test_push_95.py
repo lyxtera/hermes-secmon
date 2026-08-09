@@ -61,6 +61,55 @@ def test_network_port_baseline_changes(cfg, state, mock_commands):
     assert len(findings) >= 2
 
 
+def test_network_port_removed_dedup(cfg, state, mock_commands):
+    # Run 1: 3000 disappears for the first time
+    state["audit_baseline"]["known_ports"] = {"22": "old", "3000": "old3000"}
+    mock_commands(["ss", "-tlnp"], "State\n0.0.0.0:22 new\n")
+    mock_commands(["iptables", "-L", "INPUT", "-n"], "")
+    mock_commands(["iptables", "-L", "-n"], "")
+    mock_commands(["ip", "link", "show"], "")
+    mock_commands(["ip", "neigh", "show"], "")
+    with patch("os.path.isfile", return_value=False):
+        findings1 = network.run(state, cfg)
+    removed1 = [f for f in findings1 if f.check_id == "port_removed"]
+    assert len(removed1) == 1
+    assert "3000" in removed1[0].message
+    assert state["audit_baseline"]["reported_removed_ports"] == [3000]
+
+    # Run 2: 3000 still absent → no repeated alert
+    with patch("os.path.isfile", return_value=False):
+        findings2 = network.run(state, cfg)
+    removed2 = [f for f in findings2 if f.check_id == "port_removed"]
+    assert len(removed2) == 0
+    assert state["audit_baseline"]["reported_removed_ports"] == [3000]
+
+    # Whitelisted removed port 8080 → never alerts, not recorded
+    cfg.setdefault("whitelist", {})["port_removed"] = [8080]
+    state["audit_baseline"]["known_ports"]["8080"] = "old8080"
+    with patch("os.path.isfile", return_value=False):
+        findings3 = network.run(state, cfg)
+    removed3 = [f for f in findings3 if f.check_id == "port_removed"]
+    assert len(removed3) == 0
+    assert 8080 not in state["audit_baseline"]["reported_removed_ports"]
+
+    # Re-listen transition: 3000 comes back, then leaves again
+    mock_commands(["ss", "-tlnp"], "State\n0.0.0.0:22 new\n0.0.0.0:3000 new3000\n")
+    with patch("os.path.isfile", return_value=False):
+        findings4 = network.run(state, cfg)
+    removed4 = [f for f in findings4 if f.check_id == "port_removed"]
+    assert len(removed4) == 0
+    assert state["audit_baseline"]["reported_removed_ports"] == []
+
+    # 3000 disappears again → should re-alert
+    mock_commands(["ss", "-tlnp"], "State\n0.0.0.0:22 new\n")
+    with patch("os.path.isfile", return_value=False):
+        findings5 = network.run(state, cfg)
+    removed5 = [f for f in findings5 if f.check_id == "port_removed"]
+    assert len(removed5) == 1
+    assert "3000" in removed5[0].message
+    assert state["audit_baseline"]["reported_removed_ports"] == [3000]
+
+
 def test_threat_intel_cron_and_tmp(cfg, state, mock_commands, tmp_path):
     cronf = tmp_path / "cronjob"
     cronf.write_text("* * * * * root curl | bash\n")
