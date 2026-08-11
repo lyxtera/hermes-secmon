@@ -15,7 +15,8 @@ All live under `whitelist:`, `hardening:`, `dns:`, or `sysctl:` in `/etc/secmon/
 | `whitelist.tmpfs_mounts` | Whitelist expected tmpfs mounts beyond hard-coded list | `["/var/tmp"]` |
 | `whitelist.secret_exclude_paths` | Skip operational config files in secret pattern scan | `["/root/.hermes/config.yaml", "/root/.hermes/.env"]` |
 | `whitelist.proc_hollow_exclude_pids` | Exclude specific PIDs from anonymous mapping checks | `[449]` |
-| `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs) | `["node"]` |
+| `whitelist.proc_hollow_exclude_comms` | Exclude processes by comm name (handles changing PIDs). Supports exact OR **prefix** match (kernel-truncated comms like `npm run start:b` match when config lists `npm run`) | `["node", "npm run"]` |
+| `whitelist.proc_lineage_exclude_paths` | Skip `proc_lineage_web_shell`/`proc_lineage_inject` for trees whose child OR parent exe/cmdline lives under a path substring (e.g. a local dev-server/plugin node_modules tree spawning shells via npm) | `["/root/.hermes/plugins/hermes-pi-coding-ui-plugin"]` |
 | `whitelist.outbound_destinations` | Suppress outbound connection alerts for known-good destinations (by CIDR, IP, and/or process name) | `[{cidr: 149.154.160.0/20, process: hermes, reason: Telegram MTProto API}]` |
 | `whitelist.persist_exclude_prefixes` | Ignore secmon/hermes own systemd units in persistence diff | `["/etc/systemd/system/secmon-", "/etc/systemd/system/hermes-"]` |
 | `realtime.fail2ban_min_new_bans` | Batch threshold for fail2ban alerts — individual bans are suppressed below this count per tick | `5` |
