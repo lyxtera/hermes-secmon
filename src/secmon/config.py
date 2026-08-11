@@ -69,6 +69,7 @@ def default_config() -> dict[str, Any]:
             "secret_exclude_paths": [],
             "proc_hollow_exclude_pids": [],
             "proc_hollow_exclude_comms": [],
+            "proc_lineage_exclude_paths": [],
             "persist_exclude_prefixes": [],
             "outbound_destinations": [
                 {

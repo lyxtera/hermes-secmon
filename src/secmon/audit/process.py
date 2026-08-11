@@ -19,6 +19,30 @@ INTERPRETER_INJECT = re.compile(
 )
 
 
+def _lineage_excluded(info: dict, parent: dict, cfg: dict) -> bool:
+    """Skip lineage findings for process trees rooted in whitelisted paths.
+
+    `whitelist.proc_lineage_exclude_paths` holds path substrings (e.g. a local
+    plugin/dev-server tree). A child/parent pair is excluded if EITHER the
+    child's or the parent's exe/cmdline lives under one of those paths. This
+    suppresses false positives like a Node dev server (node -> concurrently)
+    spawning a shell (/bin/sh) to run npm scripts — the parent exe points into
+    the plugin's node_modules, while the child's doesn't.
+    """
+    exclude = [
+        p for p in cfg.get("whitelist", {}).get("proc_lineage_exclude_paths", []) if p
+    ]
+    if not exclude:
+        return False
+    probes = [
+        info.get("exe", ""),
+        info.get("cmdline", ""),
+        (parent or {}).get("exe", ""),
+        (parent or {}).get("cmdline", ""),
+    ]
+    return any(any(p in probe for p in exclude) for probe in probes)
+
+
 def run(state: dict, cfg: dict) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
 
@@ -187,7 +211,11 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         if exclude_comms:
             try:
                 comm_name = open(f"/proc/{pid}/comm", encoding="utf-8", errors="replace").read().strip()
-                if comm_name in exclude_comms:
+                # Exact match OR prefix match (covers kernel-truncated comms like
+                # "npm run start:b" when the config lists "npm run")
+                if comm_name in exclude_comms or any(
+                    comm_name.startswith(e) for e in exclude_comms if e
+                ):
                     continue
             except OSError:
                 pass
@@ -281,6 +309,8 @@ def run(state: dict, cfg: dict) -> list[AuditFinding]:
         ppid = info["ppid"]
         parent = proc_info.get(ppid)
         if not parent:
+            continue
+        if _lineage_excluded(info, parent, cfg):
             continue
         pcomm = parent["comm"].lower()
         ccomm = info["comm"].lower()

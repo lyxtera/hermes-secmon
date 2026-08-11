@@ -51,10 +51,20 @@ whitelist:
   proc_hollow_exclude_pids:
     - 449    # unattended-upgrades-shutdown (Python allocator)
 
-  # Process comm names to exclude from hollowing/mapping checks
+  # Process comm names to exclude from hollowing/mapping checks.
+  # Supports exact OR prefix match (kernel-truncated comms like "npm run start:b"
+  # match when the config lists "npm run").
   proc_hollow_exclude_comms:
     - "node"   # Node.js LSP servers (Pyright, etc.) use JIT memory allocators
     - "unattended-upgr"  # Python unattended-upgrades creates rwxp JIT mapping
+    - "npm run"  # npm wrapper scripts wrapping Node LSP/dev servers
+
+  # Path substrings whose process trees are excluded from lineage findings
+  # (proc_lineage_web_shell / proc_lineage_inject). Matches child OR parent
+  # exe/cmdline. Use for local dev-server/plugin trees that legitimately spawn
+  # shells (e.g. node -> concurrently -> /bin/sh to run npm scripts).
+  proc_lineage_exclude_paths:
+    - "/root/.hermes/plugins/hermes-pi-coding-ui-plugin"
 
   # Persistence entry prefixes to ignore (secmon/hermes own systemd units)
   persist_exclude_prefixes:
