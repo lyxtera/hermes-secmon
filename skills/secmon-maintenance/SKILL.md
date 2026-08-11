@@ -1456,6 +1456,25 @@ ps aux | grep 35753       # ❌ Not found
 
 **Fix:** No code change needed — these are legitimate transient processes. The next `--audit` run will have no findings and the risk score will return to normal. Only investigate if PID is persistent across multiple audits (check `cat /proc/<PID>/cmdline`).
 
+### Proc Hollow / Web-Shell FPs — Npm/Concurrently Dev-Server Process Tree
+
+**Symptom:** 🔴 `proc_hollow_anon` ("Anonymous executable mapping in pid N") PLUS 🟠 `proc_lineage_web_shell` ("Web process spawned shell") firing together for a node dev-server / web tool you deliberately run, even though `node` is already in `whitelist.proc_hollow_exclude_comms`.
+
+**Root cause:** npm wrapper processes report **kernel-truncated `comm` names** (15-char cap): `npm run start`, `npm run start:m`, `npm run start:b`. None of these equals the literal `"node"`, so the exact-match exclusion in `process.py` (`comm_name in exclude_comms`) misses them. The flagged `proc_lineage_web_shell` PID is usually the `concurrently` orchestrator (comm `node`). The anon-executable-mapping flag is the known node-JIT-mmap false positive — just surfacing through npm wrappers instead of a bare node proc.
+
+**Triage — flatten the whole tree before assuming intent:** Confirm every flagged PID resolves to ONE benign origin (a plugin/workspace dir you own) rather than scattered processes:
+```bash
+for p in <pid1> <pid2> ...; do echo "$p: $(ps -o args= -p $p | head -c 90)"; done
+cat /proc/<pid>/comm          # shows the actual (possibly truncated) comm
+readlink /proc/<pid>/cwd      # origin dir — all should point at the same project
+readlink /proc/<pid>/exe      # should be the node bin, not a deleted binary
+```
+If every PID's cwd is the same project dir and exe is the nvm node binary, it's your own dev server — not process hollowing.
+
+**Fix:** The comm exclusion is exact-match, so adding `node` does NOT cover npm wrappers. To truly suppress you must either (a) add the wrapper comms (`npm run start`, etc.) to `proc_hollow_exclude_comms`, (b) change `process.py` to a comm **prefix** match (strip trailing whitespace / match `npm run`), or (c) add a config whitelist key for `proc_lineage_web_shell` (it has NONE today). `proc_hollow_exclude_pids` won't help — PIDs change between runs and on restart. Prefer a code fix at source (comm-prefix match) over a growing literal list of truncated comms.
+
+**Note:** `new_listen_ports` (see above) only silences the new-port alert for the dev server's backing port(s) — it does NOT clear `proc_hollow_anon`/`proc_lineage_web_shell`, which come from the process/lineage checks. Triage each finding class independently.
+
 ## User Preferences
 
 - **Direct action** - Just do the fix, don't explain at length
