@@ -11,7 +11,7 @@ Record of a session where all 29 audit findings (3 CRIT, 9 HIGH, 11 MED, 6 LOW) 
 | World-writable venv/.lock | `chmod 644 /usr/local/lib/hermes-agent/venv/.lock` | `find -perm -0002` |
 | 43 node_modules symlinks | False positive — all are symlinks, permissions irrelevant | `ls -la` confirms `lrwxrwxrwx` |
 | Secret patterns in config backup | `rm /root/.hermes/config.yaml.bak.*` | File gone |
-| Secret patterns in mnemosyne | `chmod 600 /root/.hermes/mnemosyne/config.yaml` | Add to `secret_exclude_paths` |
+| Secret patterns in memory config | `chmod 600 /root/.hermes/memory/config.yaml` | Add to `secret_exclude_paths` |
 | Expired Baltimore cert | `apt install -y ca-certificates` (reinstall) + add `cert_exclude_paths` | `openssl x509 -enddate` |
 | sshd MaxAuthTries=6, X11Forwarding=yes | Create `/etc/ssh/sshd_config.d/99-hardening.conf` | `sshd -T \| grep -E "maxauthtries|x11forwarding"` |
 | 5 sysctl values | Create `/etc/sysctl.d/99-security-hardening.conf` + `sysctl -p` | `sysctl <name>` |
@@ -30,7 +30,7 @@ Edit `/etc/secmon/config.yaml`:
 | `dns.expected_nameservers` | Add `192.168.10.254` | Unexpected DNS server |
 | `whitelist.port_removed` | Add `80, 443, 2019` | Port removed findings |
 | `whitelist.tmpfs_mounts` | Add `/run/credentials` | Systemd credentials tmpfs (needs prefix matching code fix) |
-| `whitelist.secret_exclude_paths` | Add `/root/.hermes/mnemosyne/config.yaml` | Secret pattern in mnemosyne config |
+| `whitelist.secret_exclude_paths` | Add `/root/.hermes/memory/config.yaml` | Secret pattern in memory config |
 | `hardening.cert_exclude_paths` | Add Baltimore cert path | Expired cert |
 | `hardening.skip_debsums_check` | `True` | Slow `debsums -c` (60s+) |
 
