@@ -82,6 +82,7 @@ if entry in exclusions:
 | `kptr_restrict=2` vs expected 1 | 2 is stricter than 1 | `sysctl.expected_values: {kptr_restrict: ["1", "2"]}` |
 | `persist_modified: systemd_timers` | Secmon's own tasks | Add to `whitelist.persist_exclude_prefixes` |
 | `Long-lived outbound to 149.154.x.x (hermes)` | Hermes persistent Telegram MTProto connection — expected `hermes` behavior | Add to `whitelist.outbound_destinations`: `{cidr: 149.154.160.0/20, process: hermes}` (CIDR + process must both match) |
+| `Long-lived outbound to 198.41.200.x:7844 (cloudflared)` | Cloudflare tunnel persistent QUIC/HTTP3 connections to edge — expected `cloudflared` behavior | Add to `whitelist.outbound_destinations`: `{process: cloudflared, dests: [198.41.192.0/22, 198.41.200.0/22]}` (process + CIDR must both match) |
 | `New SSH ban: X.X.X.X` (per-IP) | Routine brute-force under constant attack — individual bans are noise | Set `realtime.fail2ban_min_new_bans: 5` to batch alerts on bursts; anomaly detection on `f2b_banned_count` catches statistical surges |
 
 ### Persistence Checklist
